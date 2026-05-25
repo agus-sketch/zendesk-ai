@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ZAI — Zendesk Article Agent</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -196,6 +197,9 @@
     </div>
     <div class="header-right">
       <div id="status-pill">Not connected</div>
+      <a href="/download" download="zendesk-ai.zip" class="hdr-btn" title="Download ZAI as a ZIP to run locally" style="display:flex;align-items:center;justify-content:center;text-decoration:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </a>
       <button id="darkBtn" class="hdr-btn" onclick="toggleDark()" title="Dark mode">
         <svg id="dark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
@@ -254,6 +258,9 @@
         <div class="panel-title-row">
           <span class="panel-title">Help Center Articles</span>
           <div class="panel-head-actions">
+            <button class="panel-icon-btn" id="downloadBtn" onclick="downloadArticles()" title="Download articles as JSON">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
             <button class="panel-icon-btn" id="refreshBtn" onclick="refreshPanel()" title="Refresh">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             </button>
@@ -533,6 +540,31 @@ async function refreshPanel() {
   btn.classList.add('spinning');
   await loadZendeskData();
   btn.classList.remove('spinning');
+}
+
+function downloadArticles() {
+  let articles = [...cachedArticles];
+  if (panelFilter === 'published') articles = articles.filter(a => !a.draft);
+  if (panelFilter === 'drafts')    articles = articles.filter(a =>  a.draft);
+  if (panelSearch) articles = articles.filter(a => a.title.toLowerCase().includes(panelSearch));
+
+  const rows = [['ID', 'Title', 'Section', 'Category', 'Status', 'Labels', 'Updated']];
+  articles.forEach(a => rows.push([
+    a.id,
+    a.title,
+    a._section,
+    a._category,
+    a.draft ? 'Draft' : 'Published',
+    (a.label_names || []).join('; '),
+    a.updated_at?.slice(0, 10) || '',
+  ]));
+
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `zendesk-articles-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
 }
 
 // ── Panel ─────────────────────────────────────────────────────────────────────

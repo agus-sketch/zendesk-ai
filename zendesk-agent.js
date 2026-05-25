@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
+import archiver from "archiver";
 import path from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
@@ -179,6 +180,21 @@ app.post("/warm", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Project download ──────────────────────────────────────────────────────────
+app.get("/download", (req, res) => {
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", 'attachment; filename="zendesk-ai.zip"');
+  const archive = archiver("zip", { zlib: { level: 9 } });
+  archive.on("error", e => { if (!res.headersSent) res.status(500).end(); console.error(e); });
+  archive.pipe(res);
+  archive.glob("**/*", {
+    cwd: __dirname,
+    ignore: ["node_modules/**", ".env", ".git/**"],
+    dot: true,
+  });
+  archive.finalize();
 });
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
