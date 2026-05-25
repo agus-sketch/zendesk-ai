@@ -181,14 +181,17 @@ app.post("/warm", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`\n✅ Zendesk AI running at http://localhost:${PORT}`);
-  console.log(ZENDESK_SUBDOMAIN
-    ? `   ✓ Instance: ${ZENDESK_SUBDOMAIN}.zendesk.com`
-    : "   ⚠ ZENDESK_SUBDOMAIN not set — add it to .env");
-  console.log("   Users authenticate with their own email + API token in the UI\n");
-  ensureOllama().catch(() => {});
-});
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`\n✅ Zendesk AI running at http://localhost:${PORT}`);
+    console.log(ZENDESK_SUBDOMAIN
+      ? `   ✓ Instance: ${ZENDESK_SUBDOMAIN}.zendesk.com`
+      : "   ⚠ ZENDESK_SUBDOMAIN not set — add it to .env");
+    console.log("   Users authenticate with their own email + API token in the UI\n");
+    ensureOllama().catch(() => {});
+  });
+}
 
 export default app;

@@ -30,7 +30,7 @@ function start() {
   if (pid) { console.log(`⚠  Already running (PID ${pid})\n   → http://localhost:${PORT}`); return; }
   clearPort();
   const log    = openSync(LOG_FILE, "a");
-  const server = spawn("node", [path.join(__dirname, "zendesk-ai.js")], {
+  const server = spawn("node", [path.join(__dirname, "zendesk-agent.js")], {
     detached: true,
     stdio: ["ignore", log, log],
   });
