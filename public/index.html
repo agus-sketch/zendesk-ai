@@ -211,6 +211,10 @@
   <div id="config">
     <div class="config-inner">
       <div class="config-row">
+        <div class="field"><label>Zendesk Email</label><input type="email" id="zdEmail" placeholder="you@company.com" /></div>
+        <div class="field"><label>Zendesk API Token</label><input type="password" id="zdToken" placeholder="Token from Admin → Zendesk API" /></div>
+      </div>
+      <div class="config-row">
         <div class="field" id="llm-key-field"><label id="llm-key-label">Groq API Key</label><input type="password" id="llmKey" placeholder="Groq API key" /></div>
         <div class="field" id="ollama-model-field" style="display:none"><label>Ollama Model</label><select id="ollamaModelSelect" onchange="ollamaModel=this.value; warmCurrentModel();"></select></div>
         <div class="provider-wrap">
@@ -287,6 +291,7 @@ const $ = id => document.getElementById(id);
 // ── State ──────────────────────────────────────────────────────────────────────
 let busy = false, panelOpen = false, panelFilter = 'all', panelSearch = '';
 let provider = 'groq', groqKey = '', openaiKey = '', anthropicKey = '', ollamaModel = 'qwen2.5:14b';
+let zdEmail = '', zdToken = '';
 let darkMode = false;
 let chatHistory = [];
 let recentContext = [];
@@ -295,6 +300,7 @@ let zendeskConnected = false;
 let currentDetailId = null;
 
 const STORAGE_KEY = 'zai-keys';
+const ZD_CREDS_KEY = 'zai-zd-creds';
 const THEME_KEY   = 'zai-theme';
 const PROV_KEY    = 'zai-provider';
 
@@ -359,6 +365,17 @@ function loadKeys() {
     return !!(groqKey || openaiKey || anthropicKey || provider === 'ollama');
   } catch { return false; }
 }
+function saveZdCreds() {
+  localStorage.setItem(ZD_CREDS_KEY, JSON.stringify({ email: zdEmail, token: zdToken }));
+}
+function loadZdCreds() {
+  try {
+    const c = JSON.parse(localStorage.getItem(ZD_CREDS_KEY) || '{}');
+    zdEmail = c.email || ''; zdToken = c.token || '';
+    $('zdEmail').value = zdEmail;
+    $('zdToken').value = zdToken;
+  } catch {}
+}
 function activeLLMKey() { return provider === 'openai' ? openaiKey : provider === 'anthropic' ? anthropicKey : provider === 'ollama' ? '' : groqKey; }
 
 // ── Dark mode ─────────────────────────────────────────────────────────────────
@@ -421,20 +438,27 @@ async function warmCurrentModel() {
 
 // ── Connect ───────────────────────────────────────────────────────────────────
 async function connect() {
+  zdEmail = $('zdEmail').value.trim();
+  zdToken = $('zdToken').value.trim();
+  if (!zdEmail || !zdToken) {
+    addMsg('agent', 'Please enter your Zendesk email and API token.', 'error');
+    return;
+  }
   if (provider === 'groq')      groqKey      = $('llmKey').value.trim();
   if (provider === 'openai')    openaiKey    = $('llmKey').value.trim();
   if (provider === 'anthropic') anthropicKey = $('llmKey').value.trim();
   saveKeys();
+  saveZdCreds();
 
   $('connectBtn').disabled = true;
   $('connectBtn').textContent = 'Connecting…';
 
   try {
     const cfg = await fetch('/config').then(r => r.json());
-    if (!cfg.connected) {
-      $('status-pill').textContent = '✗ Zendesk not configured';
+    if (!cfg.subdomain) {
+      $('status-pill').textContent = '✗ Server not configured';
       $('status-pill').className = 'error';
-      addMsg('agent', '⚠ Zendesk credentials not found in <code>.env</code>. Copy <code>.env.example</code> to <code>.env</code> and add your API token, then restart the server.', 'error');
+      addMsg('agent', '⚠ <code>ZENDESK_SUBDOMAIN</code> not set on the server. Add it to <code>.env</code> and restart.', 'error');
       return;
     }
     zendeskConnected = true;
@@ -446,7 +470,7 @@ async function connect() {
     $('settingsBtn').classList.remove('open');
     if (provider === 'ollama') warmCurrentModel();
     addMsg('agent',
-      `Connected to <strong>${cfg.subdomain}.zendesk.com</strong>. Loaded ${cachedArticles.length} article${cachedArticles.length !== 1 ? 's' : ''} across ${cachedSections.length} section${cachedSections.length !== 1 ? 's' : ''}.`
+      `Connected to <strong>${cfg.subdomain}.zendesk.com</strong> as <strong>${zdEmail}</strong>. Loaded ${cachedArticles.length} article${cachedArticles.length !== 1 ? 's' : ''} across ${cachedSections.length} section${cachedSections.length !== 1 ? 's' : ''}.`
       + '<div class="chips">'
       + '<span class="chip" onclick="quickSend(\'Show me all articles\',this)">List articles</span>'
       + '<span class="chip" onclick="quickSend(\'Create a new article\',this)">New article</span>'
@@ -465,7 +489,7 @@ async function zdFetch(method, endpoint, body) {
   const r = await fetch('/zendesk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method, endpoint, body }),
+    body: JSON.stringify({ method, endpoint, body, email: zdEmail, token: zdToken }),
   });
   return r.json();
 }
@@ -902,6 +926,7 @@ $('userInput').addEventListener('keydown', e => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+loadZdCreds();
 fetch('/config').then(r => r.json()).then(cfg => {
   window._zdSubdomain = cfg.subdomain;
 }).catch(() => {});

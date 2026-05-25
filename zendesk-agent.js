@@ -10,13 +10,11 @@ config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const ZENDESK_SUBDOMAIN  = process.env.ZENDESK_SUBDOMAIN  || "";
-const ZENDESK_EMAIL      = process.env.ZENDESK_EMAIL      || "";
-const ZENDESK_API_TOKEN  = process.env.ZENDESK_API_TOKEN  || "";
-const ZENDESK_BASE       = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN || "";
+const ZENDESK_BASE      = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 
-function zendeskAuth() {
-  return `Basic ${Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_API_TOKEN}`).toString("base64")}`;
+function zendeskAuth(email, token) {
+  return `Basic ${Buffer.from(`${email}/token:${token}`).toString("base64")}`;
 }
 
 async function ensureOllama() {
@@ -61,11 +59,7 @@ const LLM_MODELS = {
 };
 
 app.get("/config", (req, res) => {
-  res.json({
-    connected: !!(ZENDESK_SUBDOMAIN && ZENDESK_EMAIL && ZENDESK_API_TOKEN),
-    subdomain: ZENDESK_SUBDOMAIN,
-    email: ZENDESK_EMAIL,
-  });
+  res.json({ subdomain: ZENDESK_SUBDOMAIN });
 });
 
 app.get("/ollama-models", async (req, res) => {
@@ -80,14 +74,15 @@ app.get("/ollama-models", async (req, res) => {
 
 // ── Zendesk proxy ──────────────────────────────────────────────────────────────
 app.post("/zendesk", async (req, res) => {
-  const { method, endpoint, body } = req.body;
-  if (!endpoint) return res.status(400).json({ error: "Missing endpoint" });
-  if (!ZENDESK_API_TOKEN) return res.status(400).json({ error: "ZENDESK_API_TOKEN not set in .env" });
+  const { method, endpoint, body, email, token } = req.body;
+  if (!endpoint)        return res.status(400).json({ error: "Missing endpoint" });
+  if (!email || !token) return res.status(400).json({ error: "Missing Zendesk credentials" });
+  if (!ZENDESK_SUBDOMAIN) return res.status(400).json({ error: "ZENDESK_SUBDOMAIN not set in .env" });
   try {
     const opts = {
       method: method || "GET",
       headers: {
-        Authorization: zendeskAuth(),
+        Authorization: zendeskAuth(email, token),
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -186,13 +181,12 @@ app.post("/warm", async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  const ok = !!(ZENDESK_SUBDOMAIN && ZENDESK_EMAIL && ZENDESK_API_TOKEN);
-  console.log(`\n✅ Zendesk Agent running at http://localhost:${PORT}`);
-  console.log(ok
-    ? `   ✓ Zendesk: ${ZENDESK_SUBDOMAIN}.zendesk.com (${ZENDESK_EMAIL})`
-    : "   ⚠ Zendesk not configured — copy .env.example to .env and fill in your token");
-  console.log();
-  if (ok) ensureOllama().catch(() => {});
+  console.log(`\n✅ Zendesk AI running at http://localhost:${PORT}`);
+  console.log(ZENDESK_SUBDOMAIN
+    ? `   ✓ Instance: ${ZENDESK_SUBDOMAIN}.zendesk.com`
+    : "   ⚠ ZENDESK_SUBDOMAIN not set — add it to .env");
+  console.log("   Users authenticate with their own email + API token in the UI\n");
+  ensureOllama().catch(() => {});
 });
 
 export default app;

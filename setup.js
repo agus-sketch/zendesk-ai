@@ -60,23 +60,15 @@ async function main() {
     console.log("✓ Dependencies already installed");
   }
 
-  // ── Zendesk credentials ──────────────────────────────────────────────────
-  console.log("\n🔑  Zendesk credentials");
+  // ── Zendesk instance ─────────────────────────────────────────────────────
+  console.log("\n🔑  Zendesk instance");
   const env = readEnv();
 
   const subdomain = await ask("  Zendesk subdomain (part before .zendesk.com)", env.ZENDESK_SUBDOMAIN || "bankingbridgesupport");
-  const email     = await ask("  Zendesk email",     env.ZENDESK_EMAIL     || "jimmy@bankingbridge.com");
-  const token     = await ask("  Zendesk API token", env.ZENDESK_API_TOKEN && env.ZENDESK_API_TOKEN !== "your_api_token_here" ? env.ZENDESK_API_TOKEN : "");
 
-  if (!token) {
-    console.log("\n⚠  No API token entered. You can add it to .env later:");
-    console.log(`   ZENDESK_API_TOKEN=your_token`);
-  }
-
-  writeFileSync(ENV_PATH,
-    `ZENDESK_SUBDOMAIN=${subdomain}\nZENDESK_EMAIL=${email}\nZENDESK_API_TOKEN=${token || "your_api_token_here"}\nPORT=3001\n`
-  );
-  console.log(`✓ Saved credentials to .env`);
+  writeFileSync(ENV_PATH, `ZENDESK_SUBDOMAIN=${subdomain}\nPORT=3001\n`);
+  console.log(`✓ Saved to .env`);
+  console.log(`  Each user will enter their own email + API token in the UI.`);
 
   // ── CLI install ──────────────────────────────────────────────────────────
   if (!has("zendesk-ai")) {
