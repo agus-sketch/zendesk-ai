@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZAI — Zendesk Article Agent</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue: #1f73b7; --blue-hover: #1a5e9a; --blue-glow: rgba(31,115,183,0.15);
+      --bg: #f3f4f6; --surface: #ffffff; --surface-2: #f8f9fa; --surface-3: #eef0f2;
+      --border: #d8dde1; --border-light: #e9ebec;
+      --text: #1a1a1a; --text-2: #49545c; --text-3: #8a939a;
+      --green: #2e7d32; --green-bg: #e6f4ea; --green-border: #a8d5b5;
+      --err-bg: #fbeaea; --err-border: #f3b8b8; --err-text: #992222;
+      --draft-bg: #fff8e1; --draft-border: #ffe082; --draft-text: #7b5800;
+      --radius-s: 8px; --radius-m: 12px; --radius-l: 16px; --radius-xl: 20px;
+    }
+    body.dark {
+      --bg: #111418; --surface: #1a1e22; --surface-2: #22262b; --surface-3: #2c3035;
+      --border: #353a3f; --border-light: #2c3035;
+      --text: #e8eaed; --text-2: #9aa0a6; --text-3: #5f6368;
+      --green: #5ea84d; --green-bg: #122010; --green-border: #2a401f;
+      --err-bg: #201212; --err-border: #3d1f1f; --err-text: #e87878;
+      --draft-bg: #1f1a08; --draft-border: #4a3800; --draft-text: #ffd54f;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 20px; -webkit-font-smoothing: antialiased; transition: background 0.2s;
+    }
+    #app {
+      width: 100%; max-width: 760px; background: var(--surface);
+      border-radius: var(--radius-xl); border: 1px solid var(--border);
+      display: flex; flex-direction: column; height: 93vh; max-height: 860px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.05), 0 6px 24px rgba(0,0,0,0.08);
+      overflow: hidden; transition: max-width 0.32s cubic-bezier(0.4,0,0.2,1), background 0.2s;
+    }
+    #app.panel-open { max-width: 1100px; }
+
+    /* Header */
+    #header { padding: 14px 18px; border-bottom: 1px solid var(--border-light); display: flex; align-items: center; gap: 11px; flex-shrink: 0; }
+    .logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(145deg,#1f73b7,#0d5a9e); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 2px 8px rgba(31,115,183,.3); }
+    .logo svg { width: 18px; height: 18px; fill: #fff; }
+    .header-info { display: flex; flex-direction: column; gap: 1px; }
+    #header-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -.01em; }
+    #header-sub { font-size: 11px; color: var(--text-3); }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    #status-pill { font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 20px; background: var(--surface-3); color: var(--text-3); border: 1px solid var(--border); white-space: nowrap; transition: background .2s, color .2s; }
+    #status-pill.connected { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
+    #status-pill.error { background: var(--err-bg); color: var(--err-text); border-color: var(--err-border); }
+    .hdr-btn { width: 30px; height: 30px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-3); transition: background .15s, color .15s; }
+    .hdr-btn:hover { background: var(--surface-2); color: var(--text-2); }
+    .hdr-btn.open { background: var(--surface-3); color: var(--text); }
+    .hdr-btn svg { width: 15px; height: 15px; }
+    .hdr-btn:disabled { opacity: .35; cursor: default; }
+
+    /* Config */
+    #config { overflow: hidden; max-height: 200px; opacity: 1; transition: max-height .3s cubic-bezier(.4,0,.2,1), opacity .25s; border-bottom: 1px solid var(--border-light); background: var(--surface-2); }
+    #config.collapsed { max-height: 0; opacity: 0; }
+    .config-inner { padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .config-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+    .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; }
+    .field label { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+    .field input { padding: 7px 11px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); color: var(--text); outline: none; font-family: inherit; transition: border-color .15s, box-shadow .15s; }
+    .field input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-glow); }
+    .field input::placeholder { color: var(--text-3); }
+    .field select { padding: 7px 11px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); color: var(--text); outline: none; font-family: inherit; cursor: pointer; }
+    .field select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-glow); }
+    .provider-wrap { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+    .provider-wrap label { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+    .provider-tabs { display: flex; background: var(--surface-3); border-radius: var(--radius-s); padding: 2px; border: 1px solid var(--border); }
+    .pvtab { padding: 5px 12px; font-size: 12px; font-weight: 600; border: none; background: transparent; cursor: pointer; border-radius: 6px; color: var(--text-3); font-family: inherit; transition: background .15s, color .15s; }
+    .pvtab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    #connectBtn { padding: 0 18px; height: 34px; font-size: 13px; font-weight: 600; border: none; border-radius: var(--radius-s); background: var(--blue); color: #fff; cursor: pointer; white-space: nowrap; font-family: inherit; flex-shrink: 0; transition: background .15s, transform .1s; box-shadow: 0 1px 4px rgba(31,115,183,.25); }
+    #connectBtn:hover { background: var(--blue-hover); }
+    #connectBtn:active { transform: scale(.97); }
+    #connectBtn:disabled { background: #d0d5da; color: #9aa0a6; cursor: default; transform: none; box-shadow: none; }
+
+    /* Body */
+    #body { flex: 1; display: flex; overflow: hidden; }
+    #chat { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    #messages { flex: 1; overflow-y: auto; padding: 22px 20px; display: flex; flex-direction: column; gap: 18px; scroll-behavior: smooth; }
+    #messages::-webkit-scrollbar { width: 3px; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .msg { display: flex; flex-direction: column; max-width: 88%; gap: 4px; animation: msgIn .2s ease both; }
+    @keyframes msgIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.agent { align-self: flex-start; align-items: flex-start; }
+    .msg-time { font-size: 10px; color: var(--text-3); padding: 0 4px; }
+    .bubble { padding: 11px 15px; border-radius: var(--radius-l); font-size: 14px; line-height: 1.65; color: var(--text); }
+    .user .bubble { background: var(--blue); color: #fff; border-bottom-right-radius: 4px; }
+    .agent .bubble { background: var(--surface-2); border: 1px solid var(--border-light); border-bottom-left-radius: 4px; }
+    .bubble.success { background: var(--green-bg); border: 1px solid var(--green-border); color: var(--green); }
+    .bubble.error { background: var(--err-bg); border: 1px solid var(--err-border); color: var(--err-text); }
+    .bubble h2, .bubble h3 { margin: 8px 0 4px; font-size: 14px; }
+    .bubble ul, .bubble ol { padding-left: 18px; margin: 4px 0; }
+    .bubble li { margin: 2px 0; }
+    .bubble p { margin: 4px 0; }
+    .bubble a { color: var(--blue); }
+    .action-log { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+    .action-item { font-size: 13px; padding: 7px 11px; border-radius: var(--radius-s); background: rgba(255,255,255,.55); border: 1px solid rgba(0,0,0,.055); color: inherit; line-height: 1.5; }
+    body.dark .action-item { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.06); }
+    .typing-wrap { padding: 3px 0; }
+    .typing { display: flex; gap: 5px; align-items: center; height: 20px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: bop 1.2s infinite; }
+    .dot:nth-child(2){animation-delay:.18s} .dot:nth-child(3){animation-delay:.36s}
+    @keyframes bop { 0%,60%,100%{transform:translateY(0);opacity:.5} 30%{transform:translateY(-5px);opacity:1} }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .chip { font-size: 12px; padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; transition: background .12s, border-color .12s, color .12s, transform .1s; line-height: 1.4; }
+    .chip:hover { background: #e8f0fa; border-color: var(--blue); color: var(--blue); transform: translateY(-1px); }
+    body.dark .chip:hover { background: rgba(31,115,183,.1); }
+    .chip:disabled { opacity: .45; cursor: default; transform: none; }
+    #inputbar { padding: 13px 18px; border-top: 1px solid var(--border-light); display: flex; gap: 10px; align-items: flex-end; flex-shrink: 0; }
+    #userInput { flex: 1; resize: none; font-size: 14px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-m); font-family: inherit; line-height: 1.5; color: var(--text); outline: none; max-height: 120px; background: var(--surface-2); transition: border-color .15s, box-shadow .15s, background .15s; }
+    #userInput:focus { border-color: var(--blue); background: var(--surface); box-shadow: 0 0 0 3px var(--blue-glow); }
+    #userInput::placeholder { color: var(--text-3); }
+    #sendBtn { width: 40px; height: 40px; border-radius: var(--radius-m); border: none; background: var(--blue); color: #fff; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; transition: background .15s, transform .1s; box-shadow: 0 1px 4px rgba(31,115,183,.25); }
+    #sendBtn:hover { background: var(--blue-hover); }
+    #sendBtn:active { transform: scale(.91); }
+    #sendBtn:disabled { background: #d0d5da; cursor: default; transform: none; box-shadow: none; }
+    #sendBtn svg { width: 16px; height: 16px; fill: #fff; }
+
+    /* Article panel */
+    #article-panel { width: 0; flex-shrink: 0; overflow: hidden; border-left: 0 solid var(--border-light); background: var(--surface-2); display: flex; flex-direction: column; position: relative; transition: width .32s cubic-bezier(.4,0,.2,1), border-left-width .32s; }
+    #article-panel.open { width: 320px; border-left-width: 1px; }
+    #panel-head { padding: 12px 14px 10px; border-bottom: 1px solid var(--border-light); flex-shrink: 0; }
+    .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .panel-title { font-size: 12px; font-weight: 650; color: var(--text); }
+    .panel-head-actions { display: flex; gap: 4px; }
+    .panel-icon-btn { width: 24px; height: 24px; border-radius: 6px; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-3); transition: background .12s, color .12s; }
+    .panel-icon-btn:hover { background: var(--surface-3); color: var(--text-2); }
+    .panel-icon-btn.spinning svg { animation: spin .7s linear infinite; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+    .panel-tabs { display: flex; gap: 2px; background: var(--surface-3); border-radius: 8px; padding: 2px; margin-bottom: 8px; }
+    .ptab { flex: 1; padding: 4px 0; font-size: 11px; font-weight: 600; text-align: center; border: none; background: transparent; cursor: pointer; border-radius: 6px; color: var(--text-3); font-family: inherit; transition: background .15s, color .15s; }
+    .ptab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .panel-search-wrap { position: relative; }
+    #panelSearch { width: 100%; padding: 6px 28px 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); color: var(--text); outline: none; font-family: inherit; transition: border-color .15s; }
+    #panelSearch:focus { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-glow); }
+    #panelSearch::placeholder { color: var(--text-3); }
+    #searchClear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; border: none; background: transparent; cursor: pointer; color: var(--text-3); display: none; align-items: center; justify-content: center; border-radius: 4px; font-size: 14px; padding: 0; }
+    #searchClear.visible { display: flex; }
+    #panel-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+    #panel-body::-webkit-scrollbar { width: 3px; }
+    #panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .panel-empty { padding: 32px 16px; text-align: center; color: var(--text-3); font-size: 12px; line-height: 1.6; }
+    .section-label { font-size: 10px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; padding: 6px 14px 3px; display: block; }
+    .article-item { display: flex; align-items: flex-start; gap: 9px; padding: 8px 14px; cursor: pointer; transition: background .1s; }
+    .article-item:hover { background: var(--surface-3); }
+    .article-item.selected { background: rgba(31,115,183,.07); }
+    .article-info { flex: 1; min-width: 0; }
+    .article-title { font-size: 12.5px; line-height: 1.45; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+    .article-meta { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+    .article-badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; }
+    .badge-published { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+    .badge-draft { background: var(--draft-bg); color: var(--draft-text); border: 1px solid var(--draft-border); }
+    .article-date { font-size: 10.5px; color: var(--text-3); }
+
+    /* Side overlay */
+    .side-overlay { position: absolute; inset: 0; background: var(--surface-2); display: flex; flex-direction: column; transform: translateX(100%); transition: transform .25s cubic-bezier(.4,0,.2,1); z-index: 10; }
+    .side-overlay.open { transform: translateX(0); }
+    .overlay-head { padding: 12px 14px; border-bottom: 1px solid var(--border-light); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .overlay-head-title { font-size: 12.5px; font-weight: 600; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .overlay-body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .overlay-body::-webkit-scrollbar { width: 3px; }
+    .overlay-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .detail-meta { display: flex; flex-direction: column; gap: 6px; background: var(--surface); border: 1px solid var(--border-light); border-radius: var(--radius-m); padding: 11px 13px; }
+    .detail-meta-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+    .detail-section-title { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+    .detail-body { font-size: 13px; line-height: 1.7; color: var(--text-2); }
+    .detail-body h2, .detail-body h3 { font-size: 13px; font-weight: 700; color: var(--text); margin: 8px 0 4px; }
+    .detail-body ul, .detail-body ol { padding-left: 18px; margin: 4px 0; }
+    .detail-body li { margin: 2px 0; }
+    .detail-body p { margin: 4px 0; }
+    .detail-loading { padding: 32px; text-align: center; color: var(--text-3); font-size: 12px; }
+    .overlay-action-btn { padding: 8px 14px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); color: var(--text-2); cursor: pointer; font-family: inherit; transition: background .12s; }
+    .overlay-action-btn:hover { background: var(--surface-3); }
+    .overlay-action-btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .overlay-action-btn.primary:hover { background: var(--blue-hover); }
+    .overlay-action-btn.danger { border-color: var(--err-border); color: var(--err-text); }
+    .overlay-action-btn.danger:hover { background: var(--err-bg); }
+    .overlay-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="header">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+    </div>
+    <div class="header-info">
+      <span id="header-title">ZAI</span>
+      <span id="header-sub">Zendesk Article Agent</span>
+    </div>
+    <div class="header-right">
+      <div id="status-pill">Not connected</div>
+      <button id="darkBtn" class="hdr-btn" onclick="toggleDark()" title="Dark mode">
+        <svg id="dark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button id="panelBtn" class="hdr-btn" onclick="togglePanel()" title="Articles panel" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+      </button>
+      <button id="settingsBtn" class="hdr-btn open" onclick="toggleConfig()" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="config">
+    <div class="config-inner">
+      <div class="config-row">
+        <div class="field" id="llm-key-field"><label id="llm-key-label">Groq API Key</label><input type="password" id="llmKey" placeholder="Groq API key" /></div>
+        <div class="field" id="ollama-model-field" style="display:none"><label>Ollama Model</label><select id="ollamaModelSelect" onchange="ollamaModel=this.value; warmCurrentModel();"></select></div>
+        <div class="provider-wrap">
+          <label>Provider</label>
+          <div class="provider-tabs">
+            <button class="pvtab active" onclick="setProvider('groq')">Groq</button>
+            <button class="pvtab" onclick="setProvider('openai')">OpenAI</button>
+            <button class="pvtab" onclick="setProvider('ollama')">Ollama</button>
+            <button class="pvtab" onclick="setProvider('anthropic')">Claude</button>
+          </div>
+        </div>
+        <button id="connectBtn" onclick="connect()">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="body">
+    <div id="chat">
+      <div id="messages">
+        <div class="msg agent">
+          <div class="bubble">Hi! I'm ZAI, your Zendesk Help Center assistant. Enter your LLM key above and click Connect to get started.</div>
+          <div class="chips">
+            <span class="chip" onclick="quickSend('What can I ask you?', this)">What can I do?</span>
+            <span class="chip" onclick="quickSend('Show me all articles', this)">List articles</span>
+            <span class="chip" onclick="quickSend('Show me the sections', this)">Show sections</span>
+          </div>
+        </div>
+      </div>
+      <div id="inputbar">
+        <textarea id="userInput" rows="1" placeholder="Ask about articles or give me an instruction…"></textarea>
+        <button id="sendBtn" onclick="send()"><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></button>
+      </div>
+    </div>
+
+    <div id="article-panel">
+      <div id="panel-head">
+        <div class="panel-title-row">
+          <span class="panel-title">Help Center Articles</span>
+          <div class="panel-head-actions">
+            <button class="panel-icon-btn" id="refreshBtn" onclick="refreshPanel()" title="Refresh">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="panel-tabs">
+          <button class="ptab active" onclick="setPanelFilter('all',this)">All</button>
+          <button class="ptab" onclick="setPanelFilter('published',this)">Published</button>
+          <button class="ptab" onclick="setPanelFilter('drafts',this)">Drafts</button>
+        </div>
+        <div class="panel-search-wrap">
+          <input id="panelSearch" placeholder="Search articles…" oninput="onPanelSearch(this.value)" />
+          <button id="searchClear" onclick="clearPanelSearch()">×</button>
+        </div>
+      </div>
+      <div id="panel-body"><div class="panel-empty">Connect to load articles.</div></div>
+
+      <!-- Article detail overlay -->
+      <div id="article-detail" class="side-overlay">
+        <div class="overlay-head">
+          <button class="panel-icon-btn" onclick="closeDetail()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <span class="overlay-head-title" id="detail-title">Article</span>
+        </div>
+        <div class="overlay-body" id="detail-body"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let busy = false, panelOpen = false, panelFilter = 'all', panelSearch = '';
+let provider = 'groq', groqKey = '', openaiKey = '', anthropicKey = '', ollamaModel = 'qwen2.5:14b';
+let darkMode = false;
+let chatHistory = [];
+let recentContext = [];
+let cachedArticles = [], cachedSections = [], cachedCategories = [];
+let zendeskConnected = false;
+let currentDetailId = null;
+
+const STORAGE_KEY = 'zai-keys';
+const THEME_KEY   = 'zai-theme';
+const PROV_KEY    = 'zai-provider';
+
+// ── System prompt ─────────────────────────────────────────────────────────────
+const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user create, update, find, and organize Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
+
+Current data (categories, sections, articles) and conversation history are in a STATE message — use all current data from it. Never invent article IDs.
+
+=== SCOPE ===
+Only help with Zendesk Help Center content management. For off-topic requests return: {"answer":"I can only help with Help Center articles. Try: create article, search, update, list sections, or archive."}
+
+=== OUTPUT FORMAT ===
+{"answer":"<HTML>"} — for reading, listing, searching, summarizing
+{"actions":[...]} — for creating, updating, archiving, publishing, or fetching full article content
+
+=== AVAILABLE ACTIONS ===
+list_articles | search_articles | get_article
+create_article | update_article | archive_article | publish_article
+list_sections | list_categories
+
+=== SCHEMAS ===
+{"action":"list_articles","section_id":123}
+{"action":"search_articles","query":"..."}
+{"action":"get_article","article_id":456}
+{"action":"create_article","title":"...","body":"<HTML>","section_id":123,"labels":[],"draft":false}
+{"action":"update_article","article_id":456,"title":"...","body":"<HTML>","labels":[],"draft":false}
+{"action":"archive_article","article_id":456}
+{"action":"publish_article","article_id":456}
+{"action":"list_sections"}
+{"action":"list_categories"}
+
+=== BODY FORMAT ===
+Use clean HTML: <h2>/<h3> headings, <p> paragraphs, <ul>/<ol>/<li> lists, <strong>/<em>. No scripts or inline styles. Professional Help Center tone.
+
+=== ANSWER FORMAT (HTML inside "answer") ===
+For article lists: <strong>Section Name</strong><br>• <a href="#">Article title</a> — published/draft<br>...
+For summaries: brief paragraph + bullet key points.
+Keep answers under 200 words unless more detail is requested.
+
+=== LANGUAGE RULES ===
+- "show/list articles" / "what articles" → {"answer": HTML list from STATE articles}
+- "find/search X" → search_articles action
+- "show/open/get article X" → get_article action
+- "create article about X" → create_article (ask for section if not clear)
+- "update/edit article X" → update_article (only include fields to change)
+- "archive/delete article X" → archive_article
+- "publish/make live article X" → publish_article
+- "show sections/categories" → {"answer": HTML list from STATE}
+- Match articles by partial title or keywords from ARTICLES in STATE
+- Resolve "it"/"that"/"this article"/"the article" from RECENTLY SHOWN in STATE
+- Multiple changes → multiple actions in the array`;
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+function saveKeys() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ groq: groqKey, openai: openaiKey, anthropic: anthropicKey, ollama: ollamaModel }));
+}
+function loadKeys() {
+  try {
+    const k = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    groqKey = k.groq || ''; openaiKey = k.openai || ''; anthropicKey = k.anthropic || ''; ollamaModel = k.ollama || 'qwen2.5:14b';
+    $('llmKey').value = provider === 'openai' ? openaiKey : provider === 'anthropic' ? anthropicKey : groqKey;
+    return !!(groqKey || openaiKey || anthropicKey || provider === 'ollama');
+  } catch { return false; }
+}
+function activeLLMKey() { return provider === 'openai' ? openaiKey : provider === 'anthropic' ? anthropicKey : provider === 'ollama' ? '' : groqKey; }
+
+// ── Dark mode ─────────────────────────────────────────────────────────────────
+function applyTheme() {
+  document.body.classList.toggle('dark', darkMode);
+  $('dark-icon').innerHTML = darkMode
+    ? '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>'
+    : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+}
+function toggleDark() { darkMode = !darkMode; localStorage.setItem(THEME_KEY, darkMode ? 'dark' : 'light'); applyTheme(); }
+darkMode = localStorage.getItem(THEME_KEY) === 'dark'; applyTheme();
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+async function setProvider(p) {
+  if (provider === 'groq')      groqKey      = $('llmKey').value.trim();
+  if (provider === 'openai')    openaiKey    = $('llmKey').value.trim();
+  if (provider === 'anthropic') anthropicKey = $('llmKey').value.trim();
+  provider = p; localStorage.setItem(PROV_KEY, p);
+  document.querySelectorAll('.pvtab').forEach((b, i) =>
+    b.classList.toggle('active', (i===0&&p==='groq')||(i===1&&p==='openai')||(i===2&&p==='ollama')||(i===3&&p==='anthropic')));
+  const isOllama = p === 'ollama';
+  $('llm-key-field').style.display     = isOllama ? 'none' : '';
+  $('ollama-model-field').style.display = isOllama ? '' : 'none';
+  if (!isOllama) {
+    const labels = { openai: 'OpenAI API Key', anthropic: 'Claude API Key', groq: 'Groq API Key' };
+    const phs    = { openai: 'sk-...', anthropic: 'sk-ant-...', groq: 'Groq API key' };
+    const vals   = { openai: openaiKey, anthropic: anthropicKey, groq: groqKey };
+    $('llm-key-label').textContent = labels[p] || labels.groq;
+    $('llmKey').placeholder        = phs[p]    || phs.groq;
+    $('llmKey').value              = vals[p]   || '';
+  } else {
+    const sel = $('ollamaModelSelect');
+    sel.innerHTML = '<option value="">Loading…</option>';
+    try {
+      const r = await fetch('/ollama-models').then(r => r.json());
+      const models = r.models || [];
+      sel.innerHTML = models.length
+        ? models.map(m => `<option value="${m}" ${m === ollamaModel ? 'selected' : ''}>${m}</option>`).join('')
+        : '<option value="">No models installed</option>';
+      if (models.length) ollamaModel = sel.value;
+    } catch { sel.innerHTML = '<option value="">Ollama not running</option>'; }
+  }
+}
+provider = localStorage.getItem(PROV_KEY) || 'groq';
+setProvider(provider);
+loadKeys();
+
+// ── Config toggle ─────────────────────────────────────────────────────────────
+function toggleConfig() {
+  $('config').classList.toggle('collapsed');
+  $('settingsBtn').classList.toggle('open', !$('config').classList.contains('collapsed'));
+}
+
+// ── Warm Ollama ───────────────────────────────────────────────────────────────
+async function warmCurrentModel() {
+  if (provider !== 'ollama' || !ollamaModel) return;
+  try { await fetch('/warm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: ollamaModel }) }); }
+  catch {}
+}
+
+// ── Connect ───────────────────────────────────────────────────────────────────
+async function connect() {
+  if (provider === 'groq')      groqKey      = $('llmKey').value.trim();
+  if (provider === 'openai')    openaiKey    = $('llmKey').value.trim();
+  if (provider === 'anthropic') anthropicKey = $('llmKey').value.trim();
+  saveKeys();
+
+  $('connectBtn').disabled = true;
+  $('connectBtn').textContent = 'Connecting…';
+
+  try {
+    const cfg = await fetch('/config').then(r => r.json());
+    if (!cfg.connected) {
+      $('status-pill').textContent = '✗ Zendesk not configured';
+      $('status-pill').className = 'error';
+      addMsg('agent', '⚠ Zendesk credentials not found in <code>.env</code>. Copy <code>.env.example</code> to <code>.env</code> and add your API token, then restart the server.', 'error');
+      return;
+    }
+    zendeskConnected = true;
+    await loadZendeskData();
+    $('status-pill').textContent = `● ${cfg.subdomain}`;
+    $('status-pill').className = 'connected';
+    $('panelBtn').disabled = false;
+    toggleConfig();
+    $('settingsBtn').classList.remove('open');
+    if (provider === 'ollama') warmCurrentModel();
+    addMsg('agent',
+      `Connected to <strong>${cfg.subdomain}.zendesk.com</strong>. Loaded ${cachedArticles.length} article${cachedArticles.length !== 1 ? 's' : ''} across ${cachedSections.length} section${cachedSections.length !== 1 ? 's' : ''}.`
+      + '<div class="chips">'
+      + '<span class="chip" onclick="quickSend(\'Show me all articles\',this)">List articles</span>'
+      + '<span class="chip" onclick="quickSend(\'Create a new article\',this)">New article</span>'
+      + '<span class="chip" onclick="quickSend(\'Show me the sections\',this)">Sections</span>'
+      + '</div>', 'success');
+  } catch (e) {
+    addMsg('agent', `Connection error: ${e.message}`, 'error');
+  } finally {
+    $('connectBtn').disabled = false;
+    $('connectBtn').textContent = 'Connect';
+  }
+}
+
+// ── Zendesk data loading ──────────────────────────────────────────────────────
+async function zdFetch(method, endpoint, body) {
+  const r = await fetch('/zendesk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method, endpoint, body }),
+  });
+  return r.json();
+}
+
+async function loadZendeskData() {
+  const [catRes, secRes] = await Promise.all([
+    zdFetch('GET', '/help_center/categories'),
+    zdFetch('GET', '/help_center/sections'),
+  ]);
+  cachedCategories = (catRes.categories || []);
+  cachedSections   = (secRes.sections   || []);
+
+  const artRes = await zdFetch('GET', '/help_center/articles?per_page=100&sort_by=updated_at&sort_order=desc');
+  cachedArticles = (artRes.articles || []).map(enrichArticle);
+  if (panelOpen) renderPanel();
+}
+
+function enrichArticle(a) {
+  const sec = cachedSections.find(s => s.id === a.section_id);
+  const cat = sec ? cachedCategories.find(c => c.id === sec.category_id) : null;
+  return { ...a, _section: sec?.name || '', _category: cat?.name || '' };
+}
+
+async function refreshPanel() {
+  const btn = $('refreshBtn');
+  btn.classList.add('spinning');
+  await loadZendeskData();
+  btn.classList.remove('spinning');
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────────────
+function togglePanel() {
+  panelOpen = !panelOpen;
+  $('app').classList.toggle('panel-open', panelOpen);
+  $('article-panel').classList.toggle('open', panelOpen);
+  $('panelBtn').classList.toggle('open', panelOpen);
+  if (panelOpen) renderPanel();
+}
+function setPanelFilter(f, btn) {
+  panelFilter = f;
+  document.querySelectorAll('.ptab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderPanel();
+}
+function onPanelSearch(v) {
+  panelSearch = v.trim().toLowerCase();
+  $('searchClear').classList.toggle('visible', !!panelSearch);
+  renderPanel();
+}
+function clearPanelSearch() { $('panelSearch').value = ''; onPanelSearch(''); $('panelSearch').focus(); }
+
+function renderPanel() {
+  const body = $('panel-body');
+  let articles = [...cachedArticles];
+  if (panelFilter === 'published') articles = articles.filter(a => !a.draft);
+  if (panelFilter === 'drafts')    articles = articles.filter(a => a.draft);
+  if (panelSearch) articles = articles.filter(a => a.title.toLowerCase().includes(panelSearch));
+
+  if (!articles.length) {
+    body.innerHTML = `<div class="panel-empty">${cachedArticles.length ? 'No articles match.' : 'No articles found.'}</div>`;
+    return;
+  }
+
+  const bySec = {};
+  articles.forEach(a => {
+    const k = a._section || 'Uncategorized';
+    if (!bySec[k]) bySec[k] = [];
+    bySec[k].push(a);
+  });
+
+  body.innerHTML = Object.entries(bySec).map(([sec, arts]) =>
+    `<div>
+      <span class="section-label">${sec}</span>
+      ${arts.map(a => `
+        <div class="article-item ${currentDetailId === a.id ? 'selected' : ''}" onclick="openDetail(${a.id})">
+          <div class="article-info">
+            <span class="article-title">${escHtml(a.title)}</span>
+            <div class="article-meta">
+              <span class="article-badge ${a.draft ? 'badge-draft' : 'badge-published'}">${a.draft ? 'Draft' : 'Published'}</span>
+              <span class="article-date">${fmtDate(a.updated_at)}</span>
+            </div>
+          </div>
+        </div>`).join('')}
+    </div>`
+  ).join('');
+}
+
+// ── Article detail ────────────────────────────────────────────────────────────
+async function openDetail(id) {
+  currentDetailId = id;
+  renderPanel();
+  const overlay = $('article-detail');
+  $('detail-title').textContent = 'Loading…';
+  $('detail-body').innerHTML = '<div class="detail-loading">Loading article…</div>';
+  overlay.classList.add('open');
+
+  try {
+    const r = await zdFetch('GET', `/help_center/articles/${id}`);
+    const a = r.article;
+    if (!a) { $('detail-body').innerHTML = '<div class="detail-loading">Article not found.</div>'; return; }
+    const sec = cachedSections.find(s => s.id === a.section_id);
+    $('detail-title').textContent = a.title;
+    $('detail-body').innerHTML = `
+      <div class="detail-meta">
+        <div class="detail-meta-row"><strong>Status:</strong> <span class="article-badge ${a.draft ? 'badge-draft' : 'badge-published'}">${a.draft ? 'Draft' : 'Published'}</span></div>
+        <div class="detail-meta-row"><strong>Section:</strong> ${escHtml(sec?.name || 'Unknown')}</div>
+        ${a.label_names?.length ? `<div class="detail-meta-row"><strong>Labels:</strong> ${a.label_names.join(', ')}</div>` : ''}
+        <div class="detail-meta-row"><strong>Updated:</strong> ${fmtDate(a.updated_at)}</div>
+      </div>
+      <div class="detail-section-title">Content</div>
+      <div class="detail-body">${a.body || '<em>No content</em>'}</div>
+      <div class="overlay-actions-row">
+        ${a.draft ? `<button class="overlay-action-btn primary" onclick="quickSend('Publish article ${a.id}',null)">Publish</button>` : `<button class="overlay-action-btn" onclick="quickSend('Archive article ${a.id}',null)">Archive</button>`}
+        <button class="overlay-action-btn" onclick="quickSend('Update article ${a.id}',null)">Ask AI to Edit</button>
+        <a href="https://${window._zdSubdomain||''}.zendesk.com/hc/articles/${a.id}" target="_blank" class="overlay-action-btn">Open in Zendesk ↗</a>
+      </div>`;
+    recentContext = [{ type: 'article', id: a.id, title: a.title }];
+  } catch (e) {
+    $('detail-body').innerHTML = `<div class="detail-loading">Error: ${e.message}</div>`;
+  }
+}
+
+function closeDetail() {
+  $('article-detail').classList.remove('open');
+  currentDetailId = null;
+  renderPanel();
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
+function addMsg(role, html, type = '') {
+  const wrap = $('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div class="bubble${type ? ' ' + type : ''}">${html}</div><span class="msg-time">${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+  return div;
+}
+
+function addTyping() {
+  const wrap = $('messages');
+  const div = document.createElement('div');
+  div.className = 'msg agent'; div.id = 'typing-indicator';
+  div.innerHTML = '<div class="bubble typing-wrap"><div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>';
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+function removeTyping() { const el = $('typing-indicator'); if (el) el.remove(); }
+
+function quickSend(text, btn) {
+  if (btn) btn.disabled = true;
+  $('userInput').value = text;
+  send();
+}
+
+async function send() {
+  const input = $('userInput');
+  const text  = input.value.trim();
+  if (!text || busy) return;
+
+  if (!zendeskConnected) { addMsg('agent', 'Please connect first — enter your LLM key and click Connect.', 'error'); return; }
+  if (!activeLLMKey() && provider !== 'ollama') { addMsg('agent', 'Please enter your LLM API key and click Connect.', 'error'); return; }
+
+  input.value = ''; input.style.height = '';
+  addMsg('user', escHtml(text));
+  chatHistory.push({ role: 'user', content: text });
+  busy = true; $('sendBtn').disabled = true; addTyping();
+
+  try {
+    const stateMsg = buildState();
+    const messages = [
+      { role: 'system', content: RULES_BLOCK },
+      { role: 'user',   content: stateMsg },
+      ...chatHistory.slice(-10),
+    ];
+
+    const r = await fetch('/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: provider === 'ollama' ? ollamaModel : undefined }),
+    });
+    const data = await r.json();
+    removeTyping();
+
+    if (data.error) { addMsg('agent', `LLM error: ${data.error}`, 'error'); return; }
+
+    const raw = data.choices?.[0]?.message?.content || '{}';
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch { parsed = { answer: raw }; }
+
+    await handleLLMResponse(parsed, text);
+  } catch (e) {
+    removeTyping();
+    addMsg('agent', `Error: ${e.message}`, 'error');
+  } finally {
+    busy = false; $('sendBtn').disabled = false;
+  }
+}
+
+function buildState() {
+  const today = new Date().toISOString().slice(0, 10);
+  const articleSummary = cachedArticles.slice(0, 60).map(a =>
+    `  {id:${a.id}, title:"${a.title.replace(/"/g, '\\"')}", section:"${a._section}", draft:${a.draft}, labels:[${(a.label_names||[]).map(l=>`"${l}"`).join(',')}], updated:"${a.updated_at?.slice(0,10)}"}`
+  ).join('\n');
+  const sectionSummary = cachedSections.map(s => `  {id:${s.id}, name:"${s.name}", category:"${cachedCategories.find(c=>c.id===s.category_id)?.name||''}"}`).join('\n');
+  const categorySummary = cachedCategories.map(c => `  {id:${c.id}, name:"${c.name}"}`).join('\n');
+  const recentSummary = recentContext.map(r => `  {type:"${r.type}", id:${r.id}, title:"${r.title.replace(/"/g, '\\"')}"}`).join('\n');
+
+  return `=== STATE ===
+Today: ${today}
+
+CATEGORIES:
+${categorySummary || '  (none)'}
+
+SECTIONS:
+${sectionSummary || '  (none)'}
+
+ARTICLES (${cachedArticles.length} total, showing up to 60 most recent):
+${articleSummary || '  (none)'}
+
+RECENTLY SHOWN:
+${recentSummary || '  (none)'}`;
+}
+
+// ── LLM response handler ──────────────────────────────────────────────────────
+async function handleLLMResponse(parsed, userText) {
+  if (parsed.answer !== undefined) {
+    const html = parsed.answer;
+    chatHistory.push({ role: 'assistant', content: typeof html === 'string' ? html.replace(/<[^>]*>/g,' ').slice(0,300) : '' });
+    addMsg('agent', typeof html === 'string' ? html : escHtml(String(html)));
+    return;
+  }
+
+  if (parsed.actions) {
+    const actions = Array.isArray(parsed.actions) ? parsed.actions : [parsed.actions];
+    const logDiv  = document.createElement('div');
+    logDiv.className = 'msg agent';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const log = document.createElement('div');
+    log.className = 'action-log';
+    bubble.appendChild(log);
+    logDiv.appendChild(bubble);
+    $('messages').appendChild(logDiv);
+    $('messages').scrollTop = $('messages').scrollHeight;
+
+    for (const action of actions) {
+      await executeAction(action, log);
+    }
+    chatHistory.push({ role: 'assistant', content: `Executed: ${actions.map(a => a.action).join(', ')}` });
+    return;
+  }
+
+  addMsg('agent', escHtml(JSON.stringify(parsed)));
+}
+
+async function executeAction(action, log) {
+  const item = document.createElement('div');
+  item.className = 'action-item';
+  item.textContent = `⏳ ${actionLabel(action)}…`;
+  log.appendChild(item);
+  $('messages').scrollTop = $('messages').scrollHeight;
+
+  try {
+    switch (action.action) {
+      case 'list_articles': {
+        const ep = action.section_id ? `/help_center/sections/${action.section_id}/articles?per_page=100` : '/help_center/articles?per_page=100&sort_by=updated_at&sort_order=desc';
+        const r = await zdFetch('GET', ep);
+        const articles = (r.articles || []).map(enrichArticle);
+        recentContext = articles.slice(0, 5).map(a => ({ type: 'article', id: a.id, title: a.title }));
+        const html = renderArticleListHtml(articles);
+        addMsg('agent', html);
+        item.textContent = `✓ Listed ${articles.length} article${articles.length !== 1 ? 's' : ''}`;
+        break;
+      }
+      case 'search_articles': {
+        const r = await zdFetch('GET', `/help_center/articles/search?query=${encodeURIComponent(action.query)}&per_page=20`);
+        const articles = (r.results || []).map(enrichArticle);
+        recentContext = articles.slice(0, 5).map(a => ({ type: 'article', id: a.id, title: a.title }));
+        const html = articles.length
+          ? renderArticleListHtml(articles)
+          : `<em>No articles found for "${escHtml(action.query)}".</em>`;
+        addMsg('agent', html);
+        item.textContent = `✓ Found ${articles.length} result${articles.length !== 1 ? 's' : ''} for "${action.query}"`;
+        break;
+      }
+      case 'get_article': {
+        const r = await zdFetch('GET', `/help_center/articles/${action.article_id}`);
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Article ${action.article_id} not found`; return; }
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        const sec = cachedSections.find(s => s.id === a.section_id);
+        addMsg('agent',
+          `<strong>${escHtml(a.title)}</strong><br>` +
+          `<small>${sec?.name || ''} · ${a.draft ? 'Draft' : 'Published'} · Updated ${fmtDate(a.updated_at)}</small><br><br>` +
+          (a.body || '<em>No content.</em>')
+        );
+        item.textContent = `✓ Fetched article: ${a.title}`;
+        break;
+      }
+      case 'create_article': {
+        const secId = action.section_id || cachedSections[0]?.id;
+        if (!secId) { item.textContent = '✗ No section available'; return; }
+        const payload = {
+          article: {
+            title:      action.title,
+            body:       action.body || '',
+            locale:     'en-us',
+            draft:      action.draft !== undefined ? action.draft : false,
+            label_names: action.labels || [],
+          }
+        };
+        const r = await zdFetch('POST', `/help_center/sections/${secId}/articles`, payload);
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Create failed`; return; }
+        cachedArticles.unshift(enrichArticle(a));
+        if (panelOpen) renderPanel();
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        item.textContent = `✓ Created: "${a.title}" (${a.draft ? 'Draft' : 'Published'})`;
+        addMsg('agent', `Article <strong>"${escHtml(a.title)}"</strong> created successfully as ${a.draft ? 'a draft' : 'published'}.`, 'success');
+        break;
+      }
+      case 'update_article': {
+        const updates = {};
+        if (action.title  !== undefined) updates.title       = action.title;
+        if (action.body   !== undefined) updates.body        = action.body;
+        if (action.labels !== undefined) updates.label_names = action.labels;
+        if (action.draft  !== undefined) updates.draft       = action.draft;
+        const r = await zdFetch('PUT', `/help_center/articles/${action.article_id}`, { article: updates });
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Update failed`; return; }
+        const idx = cachedArticles.findIndex(x => x.id === a.id);
+        if (idx !== -1) cachedArticles[idx] = enrichArticle(a);
+        if (panelOpen) renderPanel();
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        item.textContent = `✓ Updated: "${a.title}"`;
+        addMsg('agent', `Article <strong>"${escHtml(a.title)}"</strong> updated.`, 'success');
+        break;
+      }
+      case 'archive_article': {
+        const r = await zdFetch('PUT', `/help_center/articles/${action.article_id}`, { article: { archived: true } });
+        const a = r.article;
+        cachedArticles = cachedArticles.filter(x => x.id !== action.article_id);
+        if (panelOpen) renderPanel();
+        item.textContent = `✓ Archived article ${action.article_id}`;
+        addMsg('agent', `Article archived.`, 'success');
+        break;
+      }
+      case 'publish_article': {
+        const r = await zdFetch('PUT', `/help_center/articles/${action.article_id}`, { article: { draft: false } });
+        const a = r.article;
+        const idx = cachedArticles.findIndex(x => x.id === action.article_id);
+        if (idx !== -1) cachedArticles[idx] = enrichArticle(a);
+        if (panelOpen) renderPanel();
+        item.textContent = `✓ Published: "${a?.title}"`;
+        addMsg('agent', `Article <strong>"${escHtml(a?.title || '')}"</strong> is now published.`, 'success');
+        break;
+      }
+      case 'list_sections': {
+        const html = cachedSections.length
+          ? cachedSections.map(s => {
+              const cat = cachedCategories.find(c => c.id === s.category_id);
+              return `• <strong>${escHtml(s.name)}</strong>${cat ? ` <small>(${escHtml(cat.name)})</small>` : ''} — ID: ${s.id}`;
+            }).join('<br>')
+          : '<em>No sections found.</em>';
+        addMsg('agent', `<strong>Sections</strong><br>${html}`);
+        item.textContent = `✓ Listed ${cachedSections.length} section${cachedSections.length !== 1 ? 's' : ''}`;
+        break;
+      }
+      case 'list_categories': {
+        const html = cachedCategories.length
+          ? cachedCategories.map(c => `• <strong>${escHtml(c.name)}</strong> — ID: ${c.id}`).join('<br>')
+          : '<em>No categories found.</em>';
+        addMsg('agent', `<strong>Categories</strong><br>${html}`);
+        item.textContent = `✓ Listed ${cachedCategories.length} categories`;
+        break;
+      }
+      default:
+        item.textContent = `⚠ Unknown action: ${action.action}`;
+    }
+  } catch (e) {
+    item.textContent = `✗ ${actionLabel(action)} failed: ${e.message}`;
+  }
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+function actionLabel(a) {
+  const map = {
+    list_articles:   'Listing articles',
+    search_articles: `Searching "${a.query}"`,
+    get_article:     `Fetching article ${a.article_id}`,
+    create_article:  `Creating "${a.title}"`,
+    update_article:  `Updating article ${a.article_id}`,
+    archive_article: `Archiving article ${a.article_id}`,
+    publish_article: `Publishing article ${a.article_id}`,
+    list_sections:   'Listing sections',
+    list_categories: 'Listing categories',
+  };
+  return map[a.action] || a.action;
+}
+
+function renderArticleListHtml(articles) {
+  if (!articles.length) return '<em>No articles found.</em>';
+  const bySec = {};
+  articles.forEach(a => {
+    const k = a._section || 'Uncategorized';
+    if (!bySec[k]) bySec[k] = [];
+    bySec[k].push(a);
+  });
+  return Object.entries(bySec).map(([sec, arts]) =>
+    `<strong>${escHtml(sec)}</strong><br>` +
+    arts.map(a => `• ${escHtml(a.title)} <span class="article-badge ${a.draft ? 'badge-draft' : 'badge-published'}">${a.draft ? 'Draft' : 'Published'}</span>`).join('<br>')
+  ).join('<br><br>');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined });
+}
+
+// ── Auto-grow textarea ────────────────────────────────────────────────────────
+$('userInput').addEventListener('input', function() {
+  this.style.height = '';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+$('userInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+fetch('/config').then(r => r.json()).then(cfg => {
+  window._zdSubdomain = cfg.subdomain;
+}).catch(() => {});
+</script>
+</body>
+</html>
