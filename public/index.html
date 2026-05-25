@@ -491,7 +491,9 @@ async function zdFetch(method, endpoint, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method, endpoint, body, email: zdEmail, token: zdToken }),
   });
-  return r.json();
+  const data = await r.json();
+  if (data.error) throw new Error(data.error);
+  return data;
 }
 
 async function loadZendeskData() {

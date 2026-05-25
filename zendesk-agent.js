@@ -91,8 +91,10 @@ app.post("/zendesk", async (req, res) => {
     const url = endpoint.startsWith("http") ? endpoint : ZENDESK_BASE + endpoint;
     const r = await fetch(url, opts);
     const text = await r.text();
-    try { res.status(r.status).json(JSON.parse(text)); }
-    catch { res.status(r.status).send(text); }
+    let data;
+    try { data = JSON.parse(text); }
+    catch { data = { error: `Zendesk error (${r.status}): ${text.slice(0, 300)}` }; }
+    res.status(r.status).json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
