@@ -44,7 +44,7 @@ function readEnv() {
 }
 
 async function main() {
-  console.log("\n🔧  Zendesk Agent setup\n");
+  console.log("\n🤖  ZAI — Zendesk AI setup\n");
 
   const major = Number(process.versions.node.split(".")[0]);
   if (major < 18) {
@@ -61,14 +61,17 @@ async function main() {
   }
 
   // ── Zendesk instance ─────────────────────────────────────────────────────
-  console.log("\n🔑  Zendesk instance");
+  console.log("\n🔗  Zendesk instance");
+  console.log("   (users enter their own email + API token in the browser UI)\n");
   const env = readEnv();
 
-  const subdomain = await ask("  Zendesk subdomain (part before .zendesk.com)", env.ZENDESK_SUBDOMAIN || "bankingbridgesupport");
+  const subdomain = await ask("  Your Zendesk subdomain (the part before .zendesk.com)", env.ZENDESK_SUBDOMAIN || "");
+  if (!subdomain) {
+    console.log("  ⚠ No subdomain entered — you can add ZENDESK_SUBDOMAIN= to .env later.");
+  }
 
   writeFileSync(ENV_PATH, `ZENDESK_SUBDOMAIN=${subdomain}\nPORT=3001\n`);
   console.log(`✓ Saved to .env`);
-  console.log(`  Each user will enter their own email + API token in the UI.`);
 
   // ── CLI install ──────────────────────────────────────────────────────────
   if (!has("zendesk-ai")) {
@@ -119,7 +122,7 @@ async function main() {
   }
 
   console.log("\n✅ Setup complete.\n");
-  const start = await confirm("Start Zendesk Agent now?");
+  const start = await confirm("Start ZAI now?");
   rl.close();
 
   if (start) {
@@ -128,6 +131,8 @@ async function main() {
     } else {
       run("npm start");
     }
+    console.log("\nOpen: http://localhost:3001");
+    console.log("Enter your Zendesk email + API token and your LLM key in the UI.");
   } else {
     console.log("\nStart anytime with:  zendesk-ai start   (or  npm start)");
     console.log("Then open:           http://localhost:3001");
