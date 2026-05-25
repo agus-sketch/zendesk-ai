@@ -295,6 +295,7 @@ let zdEmail = '', zdToken = '';
 let darkMode = false;
 let chatHistory = [];
 let recentContext = [];
+let recentArticleContent = '';
 let cachedArticles = [], cachedSections = [], cachedCategories = [];
 let zendeskConnected = false;
 let currentDetailId = null;
@@ -305,26 +306,34 @@ const THEME_KEY   = 'zai-theme';
 const PROV_KEY    = 'zai-provider';
 
 // ── System prompt ─────────────────────────────────────────────────────────────
-const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user create, update, find, and organize Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
+const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user search, read, explain, create, edit, and organize Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
 
-Current data (categories, sections, articles) and conversation history are in a STATE message — use all current data from it. Never invent article IDs.
+STATE message contains all current data (categories, sections, articles, recently fetched content). Never invent article IDs — only use IDs from ARTICLES in STATE.
 
 === SCOPE ===
-Only help with Zendesk Help Center content management. For off-topic requests return: {"answer":"I can only help with Help Center articles. Try: create article, search, update, list sections, or archive."}
+Only help with Zendesk Help Center content. Off-topic: {"answer":"I only help with Help Center articles. Try: search, explain, list, create, or edit articles."}
 
 === OUTPUT FORMAT ===
-{"answer":"<HTML>"} — for reading, listing, searching, summarizing
-{"actions":[...]} — for creating, updating, archiving, publishing, or fetching full article content
+{"answer":"<HTML>"} — when you already have the info: listing, summarizing, answering from STATE
+{"actions":[...]} — when you need to fetch, create, or change something
 
-=== AVAILABLE ACTIONS ===
-list_articles | search_articles | get_article
-create_article | update_article | archive_article | publish_article
-list_sections | list_categories
+=== ACTIONS ===
+list_articles    — list articles, optionally filtered by section_id
+search_articles  — keyword search across all articles
+get_article      — show full raw article content
+explain_article  — fetch article then explain it in plain language (preferred for "what does X say", "explain X", "summarize X", "tell me about X", "how does X work")
+create_article   — create a new article
+update_article   — update title, body, labels, or draft status
+archive_article  — archive an article
+publish_article  — publish a draft article
+list_sections    — list all sections
+list_categories  — list all categories
 
 === SCHEMAS ===
 {"action":"list_articles","section_id":123}
 {"action":"search_articles","query":"..."}
 {"action":"get_article","article_id":456}
+{"action":"explain_article","article_id":456,"question":"optional specific question"}
 {"action":"create_article","title":"...","body":"<HTML>","section_id":123,"labels":[],"draft":false}
 {"action":"update_article","article_id":456,"title":"...","body":"<HTML>","labels":[],"draft":false}
 {"action":"archive_article","article_id":456}
@@ -332,26 +341,30 @@ list_sections | list_categories
 {"action":"list_sections"}
 {"action":"list_categories"}
 
-=== BODY FORMAT ===
+=== ARTICLE BODY FORMAT ===
 Use clean HTML: <h2>/<h3> headings, <p> paragraphs, <ul>/<ol>/<li> lists, <strong>/<em>. No scripts or inline styles. Professional Help Center tone.
 
-=== ANSWER FORMAT (HTML inside "answer") ===
-For article lists: <strong>Section Name</strong><br>• <a href="#">Article title</a> — published/draft<br>...
-For summaries: brief paragraph + bullet key points.
-Keep answers under 200 words unless more detail is requested.
+=== ANSWER FORMAT ===
+For article lists: group by section — <strong>Section</strong><br>• Title — Published/Draft<br>
+For summaries/explanations: paragraph + bullet key points.
+For follow-up questions about a recently read article: answer directly from RECENT ARTICLE CONTENT in STATE.
+Under 200 words unless user asks for detail.
 
-=== LANGUAGE RULES ===
-- "show/list articles" / "what articles" → {"answer": HTML list from STATE articles}
-- "find/search X" → search_articles action
-- "show/open/get article X" → get_article action
-- "create article about X" → create_article (ask for section if not clear)
-- "update/edit article X" → update_article (only include fields to change)
-- "archive/delete article X" → archive_article
-- "publish/make live article X" → publish_article
-- "show sections/categories" → {"answer": HTML list from STATE}
-- Match articles by partial title or keywords from ARTICLES in STATE
-- Resolve "it"/"that"/"this article"/"the article" from RECENTLY SHOWN in STATE
-- Multiple changes → multiple actions in the array`;
+=== DECISION RULES ===
+"list/show/what articles" → {"answer": grouped HTML list from STATE}
+"articles in [section]" → list_articles with section_id from STATE
+"find/search [keywords]" → search_articles
+"show/open/display article X" → get_article
+"explain/summarize/what does X say/tell me about X/what is X about/how does X work" → explain_article
+follow-up question about a recently read article → {"answer": answer from RECENT ARTICLE CONTENT in STATE}
+"create article about X" → create_article (pick best matching section_id from STATE; ask if unclear)
+"update/edit/change/rewrite article X" → update_article (only include fields to change)
+"archive/delete/remove article X" → archive_article
+"publish/make live article X" → publish_article
+"show sections/categories" → {"answer": HTML list from STATE}
+Match articles by partial title or keywords from ARTICLES in STATE
+Resolve "it"/"that"/"this"/"the article" from RECENTLY SHOWN in STATE
+Multiple operations → multiple actions in one array`;
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 function saveKeys() {
@@ -679,8 +692,9 @@ async function send() {
     if (data.error) { addMsg('agent', `LLM error: ${data.error}`, 'error'); return; }
 
     const raw = data.choices?.[0]?.message?.content || '{}';
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/,'').trim();
     let parsed;
-    try { parsed = JSON.parse(raw); }
+    try { parsed = JSON.parse(cleaned); }
     catch { parsed = { answer: raw }; }
 
     await handleLLMResponse(parsed, text);
@@ -694,7 +708,7 @@ async function send() {
 
 function buildState() {
   const today = new Date().toISOString().slice(0, 10);
-  const articleSummary = cachedArticles.slice(0, 60).map(a =>
+  const articleSummary = cachedArticles.slice(0, 100).map(a =>
     `  {id:${a.id}, title:"${a.title.replace(/"/g, '\\"')}", section:"${a._section}", draft:${a.draft}, labels:[${(a.label_names||[]).map(l=>`"${l}"`).join(',')}], updated:"${a.updated_at?.slice(0,10)}"}`
   ).join('\n');
   const sectionSummary = cachedSections.map(s => `  {id:${s.id}, name:"${s.name}", category:"${cachedCategories.find(c=>c.id===s.category_id)?.name||''}"}`).join('\n');
@@ -710,11 +724,14 @@ ${categorySummary || '  (none)'}
 SECTIONS:
 ${sectionSummary || '  (none)'}
 
-ARTICLES (${cachedArticles.length} total, showing up to 60 most recent):
+ARTICLES (${cachedArticles.length} total, showing up to 100 most recent):
 ${articleSummary || '  (none)'}
 
 RECENTLY SHOWN:
-${recentSummary || '  (none)'}`;
+${recentSummary || '  (none)'}
+
+RECENT ARTICLE CONTENT:
+${recentArticleContent || '  (none)'}`;
 }
 
 // ── LLM response handler ──────────────────────────────────────────────────────
@@ -772,10 +789,16 @@ async function executeAction(action, log) {
         const r = await zdFetch('GET', `/help_center/articles/search?query=${encodeURIComponent(action.query)}&per_page=20`);
         const articles = (r.results || []).map(enrichArticle);
         recentContext = articles.slice(0, 5).map(a => ({ type: 'article', id: a.id, title: a.title }));
-        const html = articles.length
-          ? renderArticleListHtml(articles)
-          : `<em>No articles found for "${escHtml(action.query)}".</em>`;
-        addMsg('agent', html);
+        if (!articles.length) {
+          addMsg('agent', `<em>No articles found for "<strong>${escHtml(action.query)}</strong>".</em>`);
+        } else {
+          const summary = articles.map(a => `{id:${a.id}, title:"${a.title}", section:"${a._section}", draft:${a.draft}}`).join('\n');
+          const resp = await callLLM([
+            { role: 'system', content: 'You are ZAI. Return a JSON object {"answer":"<HTML>"} summarizing these search results in a helpful, readable way. Group by section if there are multiple sections. Mention how many results. No markdown fences.' },
+            { role: 'user', content: `Query: "${action.query}"\nResults:\n${summary}` },
+          ]);
+          addMsg('agent', resp.answer || renderArticleListHtml(articles));
+        }
         item.textContent = `✓ Found ${articles.length} result${articles.length !== 1 ? 's' : ''} for "${action.query}"`;
         break;
       }
@@ -783,14 +806,35 @@ async function executeAction(action, log) {
         const r = await zdFetch('GET', `/help_center/articles/${action.article_id}`);
         const a = r.article;
         if (!a) { item.textContent = `✗ Article ${action.article_id} not found`; return; }
-        recentContext = [{ type: 'article', id: a.id, title: a.title }];
         const sec = cachedSections.find(s => s.id === a.section_id);
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        recentArticleContent = `Title: ${a.title}\nSection: ${sec?.name || ''}\nStatus: ${a.draft ? 'Draft' : 'Published'}\nUpdated: ${a.updated_at?.slice(0,10)}\n\n${stripHtml(a.body)}`;
         addMsg('agent',
           `<strong>${escHtml(a.title)}</strong><br>` +
           `<small>${sec?.name || ''} · ${a.draft ? 'Draft' : 'Published'} · Updated ${fmtDate(a.updated_at)}</small><br><br>` +
           (a.body || '<em>No content.</em>')
         );
-        item.textContent = `✓ Fetched article: ${a.title}`;
+        item.textContent = `✓ Opened: ${a.title}`;
+        break;
+      }
+      case 'explain_article': {
+        const r = await zdFetch('GET', `/help_center/articles/${action.article_id}`);
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Article ${action.article_id} not found`; return; }
+        const sec = cachedSections.find(s => s.id === a.section_id);
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        recentArticleContent = `Title: ${a.title}\nSection: ${sec?.name || ''}\nStatus: ${a.draft ? 'Draft' : 'Published'}\nUpdated: ${a.updated_at?.slice(0,10)}\n\n${stripHtml(a.body)}`;
+        item.textContent = `✓ Read "${a.title}" — explaining…`;
+        const question = action.question || 'Explain this article clearly and concisely.';
+        const resp = await callLLM([
+          { role: 'system', content: 'You are ZAI. Return a JSON object {"answer":"<HTML>"} that answers the user\'s question about the article. Use <p>, <ul>, <li>, <strong> tags. Be direct and informative. No markdown fences.' },
+          { role: 'user', content: `Article: ${a.title}\nSection: ${sec?.name || ''}\n\nContent:\n${stripHtml(a.body)}\n\nQuestion: ${question}` },
+        ]);
+        addMsg('agent',
+          `<strong>${escHtml(a.title)}</strong> <small>· ${sec?.name || ''}</small><br><br>` +
+          (resp.answer || '<em>Could not generate explanation.</em>')
+        );
+        item.textContent = `✓ Explained: ${a.title}`;
         break;
       }
       case 'create_article': {
@@ -883,7 +927,8 @@ function actionLabel(a) {
   const map = {
     list_articles:   'Listing articles',
     search_articles: `Searching "${a.query}"`,
-    get_article:     `Fetching article ${a.article_id}`,
+    get_article:     `Opening article ${a.article_id}`,
+    explain_article: `Reading article ${a.article_id}`,
     create_article:  `Creating "${a.title}"`,
     update_article:  `Updating article ${a.article_id}`,
     archive_article: `Archiving article ${a.article_id}`,
@@ -911,6 +956,21 @@ function renderArticleListHtml(articles) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function stripHtml(html) {
+  return (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+async function callLLM(messages) {
+  const r = await fetch('/llm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: provider === 'ollama' ? ollamaModel : undefined }),
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(data.error);
+  const raw = data.choices?.[0]?.message?.content || '{}';
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  try { return JSON.parse(cleaned); } catch { return { answer: raw }; }
 }
 function fmtDate(iso) {
   if (!iso) return '';
