@@ -134,6 +134,7 @@
     .panel-title { font-size: 12px; font-weight: 650; color: var(--text); }
     .panel-head-actions { display: flex; gap: 6px; }
     .panel-icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-light); background: var(--surface-2); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-2); transition: background .12s, color .12s, border-color .12s; }
+    .panel-close-btn { display: none; }
     .panel-icon-btn svg { width: 14px; height: 14px; }
     .panel-icon-btn:hover { background: var(--surface-3); border-color: var(--border); color: var(--text); }
     .panel-icon-btn.spinning svg { animation: spin .7s linear infinite; }
@@ -221,6 +222,7 @@
         transform: translateX(0);
       }
       #panel-body { padding-bottom: env(safe-area-inset-bottom); }
+      .panel-close-btn { display: flex; }
     }
   </style>
 </head>
@@ -292,6 +294,9 @@
     <div id="article-panel">
       <div id="panel-head">
         <div class="panel-title-row">
+          <button class="panel-icon-btn panel-close-btn" onclick="togglePanel()" title="Close panel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
           <span class="panel-title">Help Center Articles</span>
           <div class="panel-head-actions">
             <button class="panel-icon-btn" id="downloadBtn" onclick="downloadArticles()" title="Download articles as JSON">
