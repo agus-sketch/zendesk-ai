@@ -15,6 +15,13 @@ const ZENDESK_BASE      = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 const SERVER_ZD_EMAIL   = process.env.ZENDESK_EMAIL  || "";
 const SERVER_ZD_TOKEN   = process.env.ZENDESK_TOKEN  || "";
 
+// Server-side LLM for the public reader (no key required from users)
+const SERVER_GROQ_KEY      = process.env.GROQ_API_KEY      || "";
+const SERVER_OPENAI_KEY    = process.env.OPENAI_API_KEY    || "";
+const SERVER_ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || "";
+const SERVER_LLM_PROVIDER  = SERVER_GROQ_KEY ? "groq" : SERVER_OPENAI_KEY ? "openai" : SERVER_ANTHROPIC_KEY ? "anthropic" : "none";
+const SERVER_LLM_KEY       = SERVER_GROQ_KEY || SERVER_OPENAI_KEY || SERVER_ANTHROPIC_KEY || "";
+
 function zendeskAuth(email, token) {
   return `Basic ${Buffer.from(`${email}/token:${token}`).toString("base64")}`;
 }
@@ -97,6 +104,91 @@ app.post("/zd-public", async (req, res) => {
     try { data = JSON.parse(text); }
     catch { data = { error: `Zendesk error (${r.status})` }; }
     res.status(r.status).json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Server-side LLM helper ────────────────────────────────────────────────────
+async function serverLLM(messages) {
+  if (SERVER_LLM_PROVIDER === "none") throw new Error("AI not configured on the server. Add GROQ_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your .env file.");
+
+  if (SERVER_LLM_PROVIDER === "anthropic") {
+    const sys  = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
+    const conv = messages.filter(m => m.role !== "system");
+    const r = await fetch(LLM_URLS.anthropic, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": SERVER_LLM_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: conv, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
+    });
+    const d = await r.json();
+    return (d.content || []).map(b => b.text || "").join("");
+  }
+
+  const r = await fetch(LLM_URLS[SERVER_LLM_PROVIDER] || LLM_URLS.groq, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVER_LLM_KEY}` },
+    body: JSON.stringify({
+      model: LLM_MODELS[SERVER_LLM_PROVIDER] || LLM_MODELS.groq,
+      messages, temperature: 0.2, max_tokens: 1024,
+      response_format: { type: "json_object" },
+    }),
+  });
+  const d = await r.json();
+  return d.choices?.[0]?.message?.content || "{}";
+}
+
+// ── Public AI reader chat ─────────────────────────────────────────────────────
+app.post("/reader-chat", async (req, res) => {
+  if (!ZENDESK_SUBDOMAIN) return res.status(503).json({ error: "ZENDESK_SUBDOMAIN not configured." });
+  if (SERVER_LLM_PROVIDER === "none") return res.status(503).json({ error: "AI not configured. Add GROQ_API_KEY to .env." });
+
+  const { question } = req.body || {};
+  if (!question?.trim()) return res.status(400).json({ error: "Missing question" });
+
+  const zdHeaders = { Accept: "application/json" };
+  if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) zdHeaders.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
+
+  try {
+    // 1. Search Zendesk for relevant articles
+    const searchRes = await fetch(
+      `${ZENDESK_BASE}/help_center/articles/search?query=${encodeURIComponent(question)}&per_page=5`,
+      { headers: zdHeaders }
+    );
+    const searchData = await searchRes.json();
+    const topArticles = (searchData.results || []).filter(a => !a.draft).slice(0, 3);
+
+    if (!topArticles.length) {
+      return res.json({
+        answer: "<p>I couldn't find articles related to your question. Try rephrasing it or use different keywords.</p>",
+        sources: [],
+      });
+    }
+
+    // 2. Fetch full article bodies (strip HTML, cap at 1500 chars each)
+    const withContent = await Promise.all(topArticles.map(async a => {
+      try {
+        const r = await fetch(`${ZENDESK_BASE}/help_center/articles/${a.id}`, { headers: zdHeaders });
+        const d = await r.json();
+        const text = (d.article?.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1500);
+        return { id: a.id, title: a.title, text };
+      } catch { return { id: a.id, title: a.title, text: "" }; }
+    }));
+
+    // 3. Ask the LLM
+    const context = withContent.map(a => `# ${a.title}\n${a.text}`).join("\n\n---\n\n");
+    const raw = await serverLLM([
+      { role: "system", content: `You are a friendly Help Center assistant. Answer the user's question using ONLY the provided article content. Be concise and helpful. Use HTML: <p>, <ul>, <li>, <strong>. If the articles don't fully answer the question, say so honestly — never invent information. Return only a valid JSON object with one key: {"answer":"<HTML string>"}` },
+      { role: "user", content: `Articles:\n${context}\n\nQuestion: ${question}` },
+    ]);
+
+    let answer;
+    try {
+      const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim());
+      answer = parsed.answer || raw;
+    } catch { answer = `<p>${raw}</p>`; }
+
+    res.json({ answer, sources: withContent.map(a => ({ id: a.id, title: a.title })) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

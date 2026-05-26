@@ -15,411 +15,325 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --blue: #1f73b7; --blue-dark: #1a5e9a; --blue-light: #e8f2fc;
-      --bg: #f3f4f6; --surface: #ffffff;
-      --border: #dde1e5; --border-light: #edf0f2;
+      --blue: #1f73b7; --blue-hover: #1a5e9a; --blue-glow: rgba(31,115,183,.15);
+      --bg: #f3f4f6; --surface: #ffffff; --surface-2: #f8f9fa; --surface-3: #eef0f2;
+      --border: #d8dde1; --border-light: #e9ebec;
       --text: #1a1a1a; --text-2: #49545c; --text-3: #8a939a;
-      --radius: 12px; --radius-s: 8px;
+      --green: #2e7d32; --green-bg: #e6f4ea; --green-border: #a8d5b5;
+      --err-bg: #fbeaea; --err-border: #f3b8b8; --err-text: #992222;
+      --radius-s: 8px; --radius-m: 12px; --radius-l: 16px; --radius-xl: 20px;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      background: var(--bg); min-height: 100vh;
-      -webkit-font-smoothing: antialiased;
+      background: var(--bg); display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 20px; -webkit-font-smoothing: antialiased;
     }
-    #app { max-width: 700px; margin: 0 auto; }
+    #app {
+      width: 100%; max-width: 680px; background: var(--surface);
+      border-radius: var(--radius-xl); border: 1px solid var(--border);
+      display: flex; flex-direction: column; height: 93vh; max-height: 820px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.05), 0 6px 24px rgba(0,0,0,.08);
+      overflow: hidden;
+    }
 
     /* ── Header ── */
     #header {
-      background: var(--blue); color: #fff;
-      padding: 14px 18px; display: flex; align-items: center; gap: 10px;
-      position: sticky; top: 0; z-index: 20;
-      padding-top: max(14px, calc(env(safe-area-inset-top) + 14px));
+      padding: 14px 18px; border-bottom: 1px solid var(--border-light);
+      display: flex; align-items: center; gap: 11px; flex-shrink: 0;
+      background: var(--surface);
     }
-    #backBtn {
-      background: none; border: none; color: rgba(255,255,255,.85); cursor: pointer;
-      display: none; align-items: center; gap: 3px; font-size: 14px; font-family: inherit;
-      padding: 4px 8px 4px 0; flex-shrink: 0; white-space: nowrap;
-    }
-    #backBtn.visible { display: flex; }
-    #backBtn svg { width: 16px; height: 16px; }
-    .hdr-logo { width: 30px; height: 30px; border-radius: 8px; background: rgba(255,255,255,.2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .hdr-logo svg { width: 16px; height: 16px; fill: #fff; }
-    #header-title { font-size: 15px; font-weight: 650; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #searchToggleBtn {
-      background: none; border: none; color: rgba(255,255,255,.85); cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0; transition: background .15s;
-    }
-    #searchToggleBtn:hover { background: rgba(255,255,255,.12); }
-    #searchToggleBtn svg { width: 17px; height: 17px; }
-
-    /* ── Search bar ── */
-    #search-wrap {
-      background: var(--blue-dark);
-      max-height: 0; overflow: hidden;
-      transition: max-height .25s ease, padding .25s ease;
-      padding: 0 18px;
-    }
-    #search-wrap.open { max-height: 72px; padding: 0 18px 14px; }
-    #searchInput {
-      width: 100%; padding: 11px 14px; border: none; border-radius: var(--radius-s);
-      font-size: 16px; font-family: inherit; outline: none;
-      background: #fff; color: var(--text);
-    }
-    #searchInput::placeholder { color: var(--text-3); }
-
-    /* ── Content ── */
-    #content { padding: 12px 0 48px; }
-
-    /* ── State messages ── */
-    .state-msg { padding: 52px 24px; text-align: center; color: var(--text-3); font-size: 14px; line-height: 1.65; }
-    .state-msg strong { display: block; font-size: 17px; color: var(--text-2); margin-bottom: 6px; }
-
-    /* ── Category label ── */
-    .category-label {
-      font-size: 11px; font-weight: 700; color: var(--text-3);
-      text-transform: uppercase; letter-spacing: .06em;
-      padding: 18px 20px 7px;
-    }
-
-    /* ── Section card ── */
-    .section-card {
-      background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border);
-      margin: 0 16px 10px; display: flex; align-items: center; gap: 14px; padding: 14px 16px;
-      cursor: pointer; transition: box-shadow .15s, border-color .15s;
-    }
-    .section-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.09); border-color: #bcc4cc; }
-    .section-card:active { box-shadow: none; background: var(--blue-light); }
-    .sec-icon {
-      width: 44px; height: 44px; border-radius: 10px; background: var(--blue-light);
+    .logo {
+      width: 34px; height: 34px; border-radius: 10px;
+      background: linear-gradient(145deg, #1f73b7, #0d5a9e);
       display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      box-shadow: 0 2px 8px rgba(31,115,183,.3);
     }
-    .sec-icon svg { width: 20px; height: 20px; color: var(--blue); }
-    .sec-info { flex: 1; min-width: 0; }
-    .sec-name { font-size: 14.5px; font-weight: 600; color: var(--text); line-height: 1.3; }
-    .sec-count { font-size: 12px; color: var(--text-3); margin-top: 2px; }
-    .sec-arrow { color: var(--text-3); flex-shrink: 0; }
-    .sec-arrow svg { width: 14px; height: 14px; }
+    .logo svg { width: 18px; height: 18px; fill: #fff; }
+    .header-info { display: flex; flex-direction: column; gap: 1px; }
+    .header-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -.01em; }
+    .header-sub { font-size: 11px; color: var(--text-3); }
+    #status-dot { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--border); transition: background .3s; }
+    #status-dot.ready { background: var(--green); }
 
-    /* ── Article list ── */
-    .article-list-card {
-      background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border);
-      margin: 0 16px 10px; overflow: hidden;
+    /* ── Messages ── */
+    #messages {
+      flex: 1; overflow-y: auto; padding: 22px 20px;
+      display: flex; flex-direction: column; gap: 20px; scroll-behavior: smooth;
     }
-    .article-row {
-      display: flex; align-items: center; gap: 12px;
-      padding: 13px 16px; cursor: pointer; transition: background .1s;
-      border-top: 1px solid var(--border-light);
+    #messages::-webkit-scrollbar { width: 3px; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .msg { display: flex; flex-direction: column; max-width: 88%; gap: 6px; animation: msgIn .2s ease both; }
+    @keyframes msgIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.agent { align-self: flex-start; align-items: flex-start; }
+    .msg-time { font-size: 10px; color: var(--text-3); padding: 0 4px; }
+    .bubble {
+      padding: 11px 15px; border-radius: var(--radius-l); font-size: 14px;
+      line-height: 1.65; color: var(--text);
     }
-    .article-row:first-child { border-top: none; }
-    .article-row:hover { background: #f5f7fa; }
-    .article-row:active { background: var(--blue-light); }
-    .art-icon { width: 30px; height: 30px; border-radius: 7px; background: var(--blue-light); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .art-icon svg { width: 14px; height: 14px; color: var(--blue); }
-    .art-info { flex: 1; min-width: 0; }
-    .art-title { font-size: 13.5px; color: var(--text); line-height: 1.4; }
-    .art-date { font-size: 11px; color: var(--text-3); margin-top: 2px; }
-    .art-arrow { color: var(--text-3); flex-shrink: 0; }
-    .art-arrow svg { width: 12px; height: 12px; }
+    .user .bubble { background: var(--blue); color: #fff; border-bottom-right-radius: 4px; }
+    .agent .bubble { background: var(--surface-2); border: 1px solid var(--border-light); border-bottom-left-radius: 4px; }
+    .bubble p { margin: 4px 0; }
+    .bubble ul, .bubble ol { padding-left: 18px; margin: 4px 0; }
+    .bubble li { margin: 3px 0; }
+    .bubble strong { font-weight: 650; }
 
-    /* ── Article detail ── */
-    #article-card {
-      background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border);
-      margin: 0 16px; overflow: hidden;
+    /* ── Sources ── */
+    .sources { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+    .sources-label { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 0 2px; }
+    .source-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 10px; border-radius: 20px;
+      border: 1px solid var(--border); background: var(--surface);
+      font-size: 12px; color: var(--text-2); cursor: pointer;
+      transition: border-color .12s, color .12s, background .12s;
+      text-decoration: none; max-width: 100%;
     }
-    #article-head { padding: 22px 22px 16px; border-bottom: 1px solid var(--border-light); }
-    #article-head-title { font-size: 19px; font-weight: 700; color: var(--text); line-height: 1.35; }
-    #article-head-meta { margin-top: 9px; font-size: 12px; color: var(--text-3); display: flex; gap: 14px; flex-wrap: wrap; }
-    #article-body {
-      padding: 22px; font-size: 14px; line-height: 1.8; color: var(--text-2);
-      overflow-wrap: break-word; word-break: break-word;
-    }
-    #article-body h1, #article-body h2 { font-size: 16px; font-weight: 700; color: var(--text); margin: 22px 0 8px; }
-    #article-body h3 { font-size: 14.5px; font-weight: 700; color: var(--text); margin: 18px 0 6px; }
-    #article-body p { margin: 6px 0; }
-    #article-body ul, #article-body ol { padding-left: 20px; margin: 6px 0; }
-    #article-body li { margin: 4px 0; }
-    #article-body a { color: var(--blue); }
-    #article-body img { max-width: 100%; border-radius: var(--radius-s); margin: 10px 0; display: block; }
-    #article-body pre { background: var(--bg); border-radius: var(--radius-s); padding: 14px; overflow-x: auto; font-size: 12.5px; margin: 10px 0; }
-    #article-body code { font-family: "SF Mono", Menlo, Monaco, monospace; font-size: .88em; background: var(--bg); padding: 1px 5px; border-radius: 3px; }
-    #article-body pre code { background: none; padding: 0; }
-    #article-body table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
-    #article-body th, #article-body td { padding: 9px 12px; border: 1px solid var(--border); text-align: left; }
-    #article-body th { background: var(--bg); font-weight: 600; color: var(--text); }
+    .source-chip:hover { border-color: var(--blue); color: var(--blue); background: #eaf3fb; }
+    .source-chip svg { width: 11px; height: 11px; flex-shrink: 0; opacity: .6; }
+    .source-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    /* ── Search results ── */
-    .search-count { padding: 10px 20px 4px; font-size: 12px; color: var(--text-3); }
-    .no-results { padding: 52px 24px; text-align: center; font-size: 14px; color: var(--text-3); line-height: 1.7; }
+    /* ── Suggestions ── */
+    .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+    .chip {
+      font-size: 12.5px; padding: 6px 13px; border-radius: 20px;
+      border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+      cursor: pointer; transition: border-color .12s, color .12s, background .12s, transform .1s;
+      line-height: 1.4;
+    }
+    .chip:hover { background: #eaf3fb; border-color: var(--blue); color: var(--blue); transform: translateY(-1px); }
+    .chip:disabled { opacity: .45; cursor: default; transform: none; }
+
+    /* ── Typing indicator ── */
+    .typing-wrap { padding: 3px 0; }
+    .typing { display: flex; gap: 5px; align-items: center; height: 20px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: bop 1.2s infinite; }
+    .dot:nth-child(2){animation-delay:.18s} .dot:nth-child(3){animation-delay:.36s}
+    @keyframes bop { 0%,60%,100%{transform:translateY(0);opacity:.5} 30%{transform:translateY(-5px);opacity:1} }
+
+    /* ── Input bar ── */
+    #inputbar {
+      padding: 13px 18px; border-top: 1px solid var(--border-light);
+      display: flex; gap: 10px; align-items: flex-end; flex-shrink: 0;
+    }
+    #userInput {
+      flex: 1; resize: none; font-size: 14px; padding: 10px 14px;
+      border: 1px solid var(--border); border-radius: var(--radius-m);
+      font-family: inherit; line-height: 1.5; color: var(--text); outline: none;
+      max-height: 120px; background: var(--surface-2);
+      transition: border-color .15s, box-shadow .15s, background .15s;
+    }
+    #userInput:focus { border-color: var(--blue); background: var(--surface); box-shadow: 0 0 0 3px var(--blue-glow); }
+    #userInput::placeholder { color: var(--text-3); }
+    #sendBtn {
+      width: 40px; height: 40px; border-radius: var(--radius-m); border: none;
+      background: var(--blue); color: #fff; cursor: pointer; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s, transform .1s;
+      box-shadow: 0 1px 4px rgba(31,115,183,.25);
+    }
+    #sendBtn:hover { background: var(--blue-hover); }
+    #sendBtn:active { transform: scale(.91); }
+    #sendBtn:disabled { background: #d0d5da; cursor: default; transform: none; box-shadow: none; }
+    #sendBtn svg { width: 16px; height: 16px; fill: #fff; }
 
     /* ── Mobile ── */
     @media (max-width: 640px) {
-      body { background: var(--surface); }
-      #app { max-width: 100%; }
-      .section-card, .article-list-card, #article-card { margin-left: 12px; margin-right: 12px; }
-      #article-head { padding: 18px 16px 14px; }
-      #article-head-title { font-size: 17px; }
-      #article-body { padding: 18px 16px; }
-      #content { padding-bottom: max(48px, calc(env(safe-area-inset-bottom) + 24px)); }
-    }
-
-    /* ── Desktop card wrapper ── */
-    @media (min-width: 641px) {
-      body { padding: 32px 0 48px; }
-      #app {
-        background: var(--surface); border-radius: var(--radius);
-        box-shadow: 0 4px 24px rgba(0,0,0,.1); overflow: hidden;
-      }
-      #header { position: static; border-radius: 0; }
+      body { padding: 0; align-items: stretch; }
+      #app { border-radius: 0; border: none; box-shadow: none; height: 100dvh; max-height: none; }
+      #messages { padding: 16px 14px; }
+      .msg { max-width: 92%; }
+      #inputbar { padding: 10px 12px; padding-bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px)); }
+      #userInput { font-size: 16px; }
+      #sendBtn { width: 44px; height: 44px; }
     }
   </style>
 </head>
 <body>
 <div id="app">
   <div id="header">
-    <button id="backBtn" onclick="goBack()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-      Back
-    </button>
-    <div class="hdr-logo">
+    <div class="logo">
       <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
     </div>
-    <span id="header-title">Help Center</span>
-    <button id="searchToggleBtn" onclick="toggleSearch()" title="Search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <div class="header-info">
+      <span class="header-title">Help Center</span>
+      <span class="header-sub">Ask me anything</span>
+    </div>
+    <div id="status-dot" title="Connecting…"></div>
+  </div>
+
+  <div id="messages">
+    <div class="msg agent">
+      <div class="bubble">
+        Hi! I can answer questions about our Help Center articles. What would you like to know?
+      </div>
+      <div class="chips" id="suggestion-chips"></div>
+    </div>
+  </div>
+
+  <div id="inputbar">
+    <textarea id="userInput" rows="1" placeholder="Ask a question…"></textarea>
+    <button id="sendBtn" onclick="send()" disabled>
+      <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
     </button>
-  </div>
-
-  <div id="search-wrap">
-    <input id="searchInput" type="search" placeholder="Search articles…" autocomplete="off" oninput="onSearchInput(this.value)" />
-  </div>
-
-  <div id="content">
-    <div class="state-msg"><strong>Loading…</strong>Fetching Help Center articles.</div>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+let busy = false;
 
-// ── State ──────────────────────────────────────────────────────────────────────
-let categories = [], sections = [], articles = [];
-let view = 'home';
-let currentSectionId = null, currentArticleId = null;
-let navHistory = [];
-let articleCache = {};
-let searchOpen = false;
-let searchTimeout = null;
-
-// ── API ────────────────────────────────────────────────────────────────────────
-async function zdFetch(endpoint) {
-  const r = await fetch('/zd-public', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint }),
-  });
-  const d = await r.json();
-  if (d.error) throw new Error(d.error);
-  return d;
-}
-
-// ── Init ───────────────────────────────────────────────────────────────────────
+// ── Init: ping the server ──────────────────────────────────────────────────────
 async function init() {
   try {
-    const [catRes, secRes] = await Promise.all([
-      zdFetch('/help_center/categories'),
-      zdFetch('/help_center/sections'),
-    ]);
-    categories = catRes.categories || [];
-    sections   = secRes.sections   || [];
-
-    let artUrl = '/help_center/articles?per_page=100&sort_by=updated_at&sort_order=desc';
-    while (artUrl) {
-      const r = await zdFetch(artUrl);
-      articles.push(...(r.articles || []).filter(a => !a.draft));
-      artUrl = r.next_page || null;
-    }
-    renderHome();
-  } catch (e) {
-    $('content').innerHTML = `<div class="state-msg"><strong>Couldn't load Help Center</strong>${escHtml(e.message)}</div>`;
-  }
-}
-
-// ── Navigation ─────────────────────────────────────────────────────────────────
-function navigate(newView, id, pushHistory = true) {
-  if (pushHistory) navHistory.push({ view, sectionId: currentSectionId, articleId: currentArticleId });
-  view = newView;
-  if (newView === 'section') currentSectionId = id;
-  if (newView === 'article') currentArticleId = id;
-  $('backBtn').classList.toggle('visible', navHistory.length > 0);
-  window.scrollTo(0, 0);
-  if (newView === 'home')    renderHome();
-  if (newView === 'section') renderSection(id);
-  if (newView === 'article') renderArticle(id);
-}
-
-function goBack() {
-  if (!navHistory.length) return;
-  const prev = navHistory.pop();
-  view = prev.view; currentSectionId = prev.sectionId; currentArticleId = prev.articleId;
-  $('backBtn').classList.toggle('visible', navHistory.length > 0);
-  window.scrollTo(0, 0);
-  if (view === 'home')    renderHome();
-  if (view === 'section') renderSection(currentSectionId);
-  if (view === 'search')  renderHome(); // re-show home on back from search
-}
-
-// ── Home ───────────────────────────────────────────────────────────────────────
-function renderHome() {
-  $('header-title').textContent = 'Help Center';
-  if (!sections.length) {
-    $('content').innerHTML = '<div class="state-msg"><strong>No sections found</strong>Check your Zendesk configuration.</div>';
-    return;
-  }
-  const countBySec = {};
-  articles.forEach(a => { countBySec[a.section_id] = (countBySec[a.section_id] || 0) + 1; });
-
-  const sectionIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
-  const arrowIcon  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`;
-
-  let html = '';
-  const catsWithSecs = categories.length
-    ? categories.filter(c => sections.some(s => s.category_id === c.id))
-    : [null];
-
-  catsWithSecs.forEach(cat => {
-    const secList = cat ? sections.filter(s => s.category_id === cat.id) : sections;
-    if (!secList.length) return;
-    if (cat) html += `<div class="category-label">${escHtml(cat.name)}</div>`;
-    secList.forEach(sec => {
-      const n = countBySec[sec.id] || 0;
-      html += `<div class="section-card" onclick="navigate('section','${sec.id}')">
-        <div class="sec-icon">${sectionIcon}</div>
-        <div class="sec-info"><div class="sec-name">${escHtml(sec.name)}</div><div class="sec-count">${n} article${n !== 1 ? 's' : ''}</div></div>
-        <div class="sec-arrow">${arrowIcon}</div>
-      </div>`;
+    const r = await fetch('/zd-public', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: '/help_center/categories' }),
     });
-  });
-  $('content').innerHTML = html;
-}
-
-// ── Section ────────────────────────────────────────────────────────────────────
-function renderSection(sectionId) {
-  const sec = sections.find(s => String(s.id) === String(sectionId));
-  $('header-title').textContent = sec?.name || 'Section';
-  const secArts = articles.filter(a => String(a.section_id) === String(sectionId));
-  if (!secArts.length) {
-    $('content').innerHTML = '<div class="state-msg">No articles in this section.</div>';
-    return;
-  }
-  const artIcon  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
-  const arrowIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`;
-  const rows = secArts.map(a => `
-    <div class="article-row" onclick="navigate('article','${a.id}')">
-      <div class="art-icon">${artIcon}</div>
-      <div class="art-info"><div class="art-title">${escHtml(a.title)}</div><div class="art-date">${fmtDate(a.updated_at)}</div></div>
-      <div class="art-arrow">${arrowIcon}</div>
-    </div>`).join('');
-  $('content').innerHTML = `<div class="article-list-card">${rows}</div>`;
-}
-
-// ── Article ────────────────────────────────────────────────────────────────────
-async function renderArticle(articleId) {
-  const meta = articles.find(a => String(a.id) === String(articleId));
-  $('header-title').textContent = meta?.title || 'Article';
-  $('content').innerHTML = '<div class="state-msg">Loading…</div>';
-  try {
-    let a = articleCache[articleId];
-    if (!a) {
-      const r = await zdFetch(`/help_center/articles/${articleId}`);
-      a = r.article;
-      if (a) articleCache[articleId] = a;
-    }
-    if (!a) { $('content').innerHTML = '<div class="state-msg">Article not found.</div>'; return; }
-    const sec = sections.find(s => s.id === a.section_id);
-    const words = (a.body || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().split(/\s+/).filter(Boolean).length;
-    const mins = Math.max(1, Math.round(words / 200));
-    $('header-title').textContent = a.title;
-    $('content').innerHTML = `
-      <div id="article-card">
-        <div id="article-head">
-          <div id="article-head-title">${escHtml(a.title)}</div>
-          <div id="article-head-meta">
-            ${sec ? `<span>${escHtml(sec.name)}</span>` : ''}
-            <span>Updated ${fmtDate(a.updated_at)}</span>
-            <span>${mins} min read</span>
-          </div>
-        </div>
-        <div id="article-body">${a.body || '<em>No content.</em>'}</div>
-      </div>`;
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    $('status-dot').classList.add('ready');
+    $('status-dot').title = 'Connected';
+    $('sendBtn').disabled = false;
+    renderSuggestions(d.categories || []);
   } catch (e) {
-    $('content').innerHTML = `<div class="state-msg"><strong>Error</strong>${escHtml(e.message)}</div>`;
+    $('status-dot').title = 'Error: ' + e.message;
+    addMsg('agent', `<p>⚠️ Couldn't connect to Help Center: <strong>${escHtml(e.message)}</strong></p>`, 'error');
   }
 }
 
-// ── Search ─────────────────────────────────────────────────────────────────────
-function onSearchInput(q) {
-  clearTimeout(searchTimeout);
-  if (!q.trim()) {
-    if (view === 'search') { navigate('home', null, false); navHistory = []; }
-    return;
-  }
-  searchTimeout = setTimeout(() => doSearch(q.trim()), 380);
+function renderSuggestions(categories) {
+  const chips = $('suggestion-chips');
+  const defaults = ['How do I get started?', 'Billing & payments', 'Account settings', 'Troubleshooting'];
+  const labels = categories.length ? categories.slice(0, 4).map(c => c.name) : defaults;
+  chips.innerHTML = labels.map(l =>
+    `<span class="chip" onclick="quickAsk(this,'${escAttr(l)}')">${escHtml(l)}</span>`
+  ).join('');
 }
 
-async function doSearch(q) {
-  if (view !== 'search') navHistory.push({ view, sectionId: currentSectionId, articleId: currentArticleId });
-  view = 'search';
-  $('backBtn').classList.add('visible');
-  $('header-title').textContent = `"${q}"`;
-  $('content').innerHTML = '<div class="state-msg">Searching…</div>';
+// ── Chat ───────────────────────────────────────────────────────────────────────
+function addMsg(role, html, type = '') {
+  const wrap = $('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div class="bubble${type ? ' ' + type : ''}">${html}</div><span class="msg-time">${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>`;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+  return div;
+}
+
+function addTyping() {
+  const wrap = $('messages');
+  const div = document.createElement('div');
+  div.className = 'msg agent'; div.id = 'typing';
+  div.innerHTML = '<div class="bubble typing-wrap"><div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>';
+  wrap.appendChild(div); wrap.scrollTop = wrap.scrollHeight;
+}
+function removeTyping() { const el = $('typing'); if (el) el.remove(); }
+
+function quickAsk(btn, text) {
+  document.querySelectorAll('.chip').forEach(c => c.disabled = true);
+  $('userInput').value = text;
+  send();
+}
+
+async function send() {
+  const input = $('userInput');
+  const text = input.value.trim();
+  if (!text || busy) return;
+
+  input.value = ''; input.style.height = '';
+  addMsg('user', escHtml(text));
+  busy = true; $('sendBtn').disabled = true; addTyping();
+
   try {
-    const r = await zdFetch(`/help_center/articles/search?query=${encodeURIComponent(q)}&per_page=25`);
-    const results = (r.results || []).filter(a => !a.draft);
-    if (!results.length) {
-      $('content').innerHTML = `<div class="no-results">No results for <strong>"${escHtml(q)}"</strong><br><br>Try different keywords.</div>`;
+    const r = await fetch('/reader-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: text }),
+    });
+    const data = await r.json();
+    removeTyping();
+
+    if (data.error) {
+      addMsg('agent', `<p>⚠️ ${escHtml(data.error)}</p>`, 'error');
       return;
     }
-    const artIcon  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
-    const arrowIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`;
-    const rows = results.map(a => {
-      const sec = sections.find(s => s.id === a.section_id);
-      return `<div class="article-row" onclick="navigate('article','${a.id}')">
-        <div class="art-icon">${artIcon}</div>
-        <div class="art-info"><div class="art-title">${escHtml(a.title)}</div><div class="art-date">${sec ? escHtml(sec.name) + ' · ' : ''}${fmtDate(a.updated_at)}</div></div>
-        <div class="art-arrow">${arrowIcon}</div>
-      </div>`;
-    }).join('');
-    $('content').innerHTML = `<div class="search-count">${results.length} result${results.length !== 1 ? 's' : ''}</div><div class="article-list-card">${rows}</div>`;
+
+    // AI answer
+    const msgDiv = addMsg('agent', data.answer || '<p>No answer generated.</p>');
+
+    // Source articles
+    if (data.sources?.length) {
+      const srcWrap = document.createElement('div');
+      srcWrap.className = 'sources';
+      srcWrap.innerHTML = `<span class="sources-label">Sources</span>` +
+        data.sources.map(s =>
+          `<a class="source-chip" onclick="openArticle(${s.id}, '${escAttr(s.title)}')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>${escHtml(s.title)}</span>
+          </a>`
+        ).join('');
+      msgDiv.appendChild(srcWrap);
+      $('messages').scrollTop = $('messages').scrollHeight;
+    }
   } catch (e) {
-    $('content').innerHTML = `<div class="state-msg"><strong>Search failed</strong>${escHtml(e.message)}</div>`;
+    removeTyping();
+    addMsg('agent', `<p>Error: ${escHtml(e.message)}</p>`, 'error');
+  } finally {
+    busy = false; $('sendBtn').disabled = false;
+    input.focus();
   }
 }
 
-// ── Search toggle ──────────────────────────────────────────────────────────────
-function toggleSearch() {
-  searchOpen = !searchOpen;
-  $('search-wrap').classList.toggle('open', searchOpen);
-  if (searchOpen) {
-    setTimeout(() => $('searchInput').focus(), 150);
-  } else {
-    $('searchInput').value = '';
-    if (view === 'search') { navHistory = []; navigate('home', null, false); }
+// ── Open article inline ────────────────────────────────────────────────────────
+async function openArticle(id, title) {
+  addMsg('user', `Show me the full article: ${escHtml(title)}`);
+  busy = true; $('sendBtn').disabled = true; addTyping();
+  try {
+    const r = await fetch('/zd-public', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: `/help_center/articles/${id}` }),
+    });
+    const d = await r.json();
+    removeTyping();
+    const a = d.article;
+    if (!a) { addMsg('agent', '<p>Article not found.</p>', 'error'); return; }
+    const mins = Math.max(1, Math.round((a.body || '').replace(/<[^>]+>/g,' ').trim().split(/\s+/).length / 200));
+    addMsg('agent',
+      `<strong>${escHtml(a.title)}</strong><br>` +
+      `<small style="color:var(--text-3)">Updated ${fmtDate(a.updated_at)} · ${mins} min read</small><br><br>` +
+      (a.body || '<em>No content.</em>')
+    );
+  } catch (e) {
+    removeTyping();
+    addMsg('agent', `<p>Error: ${escHtml(e.message)}</p>`, 'error');
+  } finally {
+    busy = false; $('sendBtn').disabled = false;
   }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function escHtml(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escAttr(s) { return String(s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
 function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined });
 }
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// ── Auto-grow textarea ─────────────────────────────────────────────────────────
+$('userInput').addEventListener('input', function () {
+  this.style.height = '';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+$('userInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
 
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 init();
 </script>
 </body>
