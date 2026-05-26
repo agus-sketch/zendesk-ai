@@ -208,7 +208,10 @@
           </div>
         </div>
       </div>
-      <div class="config-hint">Optional — leave blank to use the server's configured key.</div>
+      <div class="config-row" style="margin-top:2px">
+        <button id="saveKeyBtn" onclick="saveKey()" style="padding:0 18px;height:34px;font-size:13px;font-weight:600;border:none;border-radius:var(--radius-s);background:var(--blue);color:#fff;cursor:pointer;font-family:inherit;flex-shrink:0;transition:background .15s;box-shadow:0 1px 4px rgba(31,115,183,.25)">Save</button>
+        <div class="config-hint" style="align-self:center">Optional — leave blank to use the server's configured key.</div>
+      </div>
     </div>
   </div>
 
@@ -260,7 +263,20 @@ function loadStoredKey() {
   $('llmKey').value = k;
 }
 
-$('llmKey').addEventListener('change', () => localStorage.setItem(KEY_STORE, $('llmKey').value.trim()));
+function saveKey() {
+  const key = $('llmKey').value.trim();
+  localStorage.setItem(KEY_STORE, key);
+  localStorage.setItem(PROV_STORE, provider);
+  // Close panel
+  $('config').classList.add('collapsed');
+  $('settingsBtn').classList.remove('open');
+  // Confirm in chat
+  const label = KEY_LABELS[provider] || 'API key';
+  addMsg('agent', key
+    ? `<p>✓ ${label} saved. I'll use it for all your questions.</p>`
+    : `<p>Key cleared — falling back to the server's configured key.</p>`
+  );
+}
 
 // ── Init: ping the server ──────────────────────────────────────────────────────
 async function init() {
