@@ -190,6 +190,38 @@
     .overlay-action-btn.danger { border-color: var(--err-border); color: var(--err-text); }
     .overlay-action-btn.danger:hover { background: var(--err-bg); }
     .overlay-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    /* ── Mobile ── */
+    @media (max-width: 640px) {
+      body { padding: 0; align-items: stretch; }
+      #app { border-radius: 0; border: none; box-shadow: none; height: 100dvh; max-height: none; }
+      #app.panel-open { max-width: 100%; }
+      #header { padding: 10px 14px; gap: 8px; }
+      #header-sub { display: none; }
+      #config { max-height: 400px; }
+      .config-row { flex-direction: column; align-items: stretch; }
+      .field { min-width: unset; }
+      .provider-wrap { width: 100%; }
+      .provider-tabs { width: 100%; }
+      #connectBtn { width: 100%; height: 42px; margin-top: 2px; }
+      #messages { padding: 16px 14px; }
+      .msg { max-width: 92%; }
+      #inputbar { padding: 10px 12px; padding-bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px)); }
+      #userInput { font-size: 16px; }
+      .field input, .field select { font-size: 16px; }
+      #sendBtn { width: 44px; height: 44px; }
+      #article-panel {
+        position: fixed; inset: 0; z-index: 300;
+        width: 100% !important; border-left: none !important;
+        transform: translateX(100%);
+        transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+      }
+      #article-panel.open {
+        width: 100% !important; border-left-width: 0 !important;
+        transform: translateX(0);
+      }
+      #panel-body { padding-bottom: env(safe-area-inset-bottom); }
+    }
   </style>
 </head>
 <body>
