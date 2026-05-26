@@ -162,6 +162,9 @@
     .badge-published { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
     .badge-draft { background: var(--draft-bg); color: var(--draft-text); border: 1px solid var(--draft-border); }
     .article-date { font-size: 10.5px; color: var(--text-3); }
+    .label-chips { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 3px; }
+    .label-chip { font-size: 9.5px; padding: 1px 5px; border-radius: 3px; background: var(--surface-3); color: var(--text-3); border: 1px solid var(--border-light); white-space: nowrap; }
+    .article-count { font-size: 10px; color: var(--text-3); margin-left: 3px; }
 
     /* Side overlay */
     .side-overlay { position: absolute; inset: 0; background: var(--surface-2); display: flex; flex-direction: column; transform: translateX(100%); transition: transform .25s cubic-bezier(.4,0,.2,1); z-index: 10; }
@@ -316,12 +319,12 @@ const THEME_KEY   = 'zai-theme';
 const PROV_KEY    = 'zai-provider';
 
 // ── System prompt ─────────────────────────────────────────────────────────────
-const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user search, read, explain, create, edit, and organize Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
+const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user search, read, explain, create, edit, move, duplicate, bulk-publish, and audit Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
 
 STATE message contains all current data (categories, sections, articles, recently fetched content). Never invent article IDs — only use IDs from ARTICLES in STATE.
 
 === SCOPE ===
-Only help with Zendesk Help Center content. Off-topic: {"answer":"I only help with Help Center articles. Try: search, explain, list, create, or edit articles."}
+Only help with Zendesk Help Center content. Off-topic: {"answer":"I only help with Help Center articles. Try: search, explain, list, create, move, or edit articles."}
 
 === OUTPUT FORMAT ===
 {"answer":"<HTML>"} — when you already have the info: listing, summarizing, answering from STATE
@@ -331,11 +334,16 @@ Only help with Zendesk Help Center content. Off-topic: {"answer":"I only help wi
 list_articles    — list articles, optionally filtered by section_id
 search_articles  — keyword search across all articles
 get_article      — show full raw article content
-explain_article  — fetch article then explain it in plain language (preferred for "what does X say", "explain X", "summarize X", "tell me about X", "how does X work")
+explain_article  — fetch article then explain it in plain language
 create_article   — create a new article
 update_article   — update title, body, labels, or draft status
-archive_article  — archive an article
-publish_article  — publish a draft article
+move_article     — move article to a different section
+duplicate_article — copy an article (always saved as draft)
+archive_article  — archive an article (soft delete)
+delete_article   — permanently delete an article (irreversible)
+publish_article  — publish a single draft article
+bulk_publish     — publish all drafts, optionally filtered by section_id
+article_health   — audit the Help Center for stale, unlabeled, or draft-heavy areas
 list_sections    — list all sections
 list_categories  — list all categories
 
@@ -346,17 +354,22 @@ list_categories  — list all categories
 {"action":"explain_article","article_id":456,"question":"optional specific question"}
 {"action":"create_article","title":"...","body":"<HTML>","section_id":123,"labels":[],"draft":false}
 {"action":"update_article","article_id":456,"title":"...","body":"<HTML>","labels":[],"draft":false}
+{"action":"move_article","article_id":456,"section_id":123}
+{"action":"duplicate_article","article_id":456,"title":"optional new title","section_id":123}
 {"action":"archive_article","article_id":456}
+{"action":"delete_article","article_id":456}
 {"action":"publish_article","article_id":456}
+{"action":"bulk_publish","section_id":123}
+{"action":"article_health"}
 {"action":"list_sections"}
 {"action":"list_categories"}
 
 === ARTICLE BODY FORMAT ===
-Use clean HTML: <h2>/<h3> headings, <p> paragraphs, <ul>/<ol>/<li> lists, <strong>/<em>. No scripts or inline styles. Professional Help Center tone.
+Use clean HTML: <h2>/<h3> headings, <p> paragraphs, <ul>/<ol>/<li> lists, <strong>/<em>. No scripts or inline styles. Professional Help Center tone. Aim for 200–600 words for substantive articles.
 
 === ANSWER FORMAT ===
 For article lists: group by section — <strong>Section</strong><br>• Title — Published/Draft<br>
-For summaries/explanations: paragraph + bullet key points.
+For summaries/explanations: short intro paragraph + bullet key points.
 For follow-up questions about a recently read article: answer directly from RECENT ARTICLE CONTENT in STATE.
 Under 200 words unless user asks for detail.
 
@@ -366,15 +379,20 @@ Under 200 words unless user asks for detail.
 "find/search [keywords]" → search_articles
 "show/open/display article X" → get_article
 "explain/summarize/what does X say/tell me about X/what is X about/how does X work" → explain_article
-follow-up question about a recently read article → {"answer": answer from RECENT ARTICLE CONTENT in STATE}
+follow-up about a recently read article → {"answer": answer from RECENT ARTICLE CONTENT in STATE}
 "create article about X" → create_article (pick best matching section_id from STATE; ask if unclear)
 "update/edit/change/rewrite article X" → update_article (only include fields to change)
-"archive/delete/remove article X" → archive_article
-"publish/make live article X" → publish_article
+"move article X to [section]" → move_article with section_id from STATE
+"duplicate/copy article X" → duplicate_article
+"archive article X" → archive_article
+"permanently delete article X" → delete_article (confirm irreversible only if user explicitly says "permanently" or "delete forever")
+"publish article X" → publish_article
+"publish all drafts" / "bulk publish" → bulk_publish
+"health check" / "audit" / "how are my articles doing" / "what needs attention" → article_health
 "show sections/categories" → {"answer": HTML list from STATE}
-Match articles by partial title or keywords from ARTICLES in STATE
+Match articles by partial title or keywords from ARTICLES in STATE — choose the closest match, never invent IDs
 Resolve "it"/"that"/"this"/"the article" from RECENTLY SHOWN in STATE
-Multiple operations → multiple actions in one array`;
+Multiple operations in one message → multiple actions in one array`;
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 function saveKeys() {
@@ -591,8 +609,20 @@ function onPanelSearch(v) {
 }
 function clearPanelSearch() { $('panelSearch').value = ''; onPanelSearch(''); $('panelSearch').focus(); }
 
+function renderPanelTabCounts() {
+  if (!cachedArticles.length) return;
+  const total = cachedArticles.length;
+  const published = cachedArticles.filter(a => !a.draft).length;
+  const drafts = cachedArticles.filter(a => a.draft).length;
+  const tabs = document.querySelectorAll('.ptab');
+  if (tabs[0]) tabs[0].innerHTML = `All <span class="article-count">(${total})</span>`;
+  if (tabs[1]) tabs[1].innerHTML = `Published <span class="article-count">(${published})</span>`;
+  if (tabs[2]) tabs[2].innerHTML = `Drafts <span class="article-count">${drafts ? `<span style="color:var(--draft-text)">(${drafts})</span>` : '(0)'}</span>`;
+}
+
 function renderPanel() {
   const body = $('panel-body');
+  renderPanelTabCounts();
   let articles = [...cachedArticles];
   if (panelFilter === 'published') articles = articles.filter(a => !a.draft);
   if (panelFilter === 'drafts')    articles = articles.filter(a => a.draft);
@@ -613,7 +643,11 @@ function renderPanel() {
   body.innerHTML = Object.entries(bySec).map(([sec, arts]) =>
     `<div>
       <span class="section-label">${sec}</span>
-      ${arts.map(a => `
+      ${arts.map(a => {
+        const labels = a.label_names?.length
+          ? `<div class="label-chips">${a.label_names.map(l => `<span class="label-chip">${escHtml(l)}</span>`).join('')}</div>`
+          : '';
+        return `
         <div class="article-item ${currentDetailId === a.id ? 'selected' : ''}" onclick="openDetail(${a.id})">
           <div class="article-info">
             <span class="article-title">${escHtml(a.title)}</span>
@@ -621,8 +655,10 @@ function renderPanel() {
               <span class="article-badge ${a.draft ? 'badge-draft' : 'badge-published'}">${a.draft ? 'Draft' : 'Published'}</span>
               <span class="article-date">${fmtDate(a.updated_at)}</span>
             </div>
+            ${labels}
           </div>
-        </div>`).join('')}
+        </div>`;
+      }).join('')}
     </div>`
   ).join('');
 }
@@ -642,19 +678,37 @@ async function openDetail(id) {
     if (!a) { $('detail-body').innerHTML = '<div class="detail-loading">Article not found.</div>'; return; }
     const sec = cachedSections.find(s => s.id === a.section_id);
     $('detail-title').textContent = a.title;
+    const sectionOptions = cachedSections
+      .filter(s => s.id !== a.section_id)
+      .map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`)
+      .join('');
+    const wordCount = stripHtml(a.body || '').split(/\s+/).filter(Boolean).length;
     $('detail-body').innerHTML = `
       <div class="detail-meta">
         <div class="detail-meta-row"><strong>Status:</strong> <span class="article-badge ${a.draft ? 'badge-draft' : 'badge-published'}">${a.draft ? 'Draft' : 'Published'}</span></div>
         <div class="detail-meta-row"><strong>Section:</strong> ${escHtml(sec?.name || 'Unknown')}</div>
-        ${a.label_names?.length ? `<div class="detail-meta-row"><strong>Labels:</strong> ${a.label_names.join(', ')}</div>` : ''}
+        ${a.label_names?.length ? `<div class="detail-meta-row"><strong>Labels:</strong> ${a.label_names.map(l=>`<span class="label-chip">${escHtml(l)}</span>`).join(' ')}</div>` : ''}
         <div class="detail-meta-row"><strong>Updated:</strong> ${fmtDate(a.updated_at)}</div>
+        <div class="detail-meta-row"><strong>Words:</strong> ${wordCount}</div>
       </div>
       <div class="detail-section-title">Content</div>
       <div class="detail-body">${a.body || '<em>No content</em>'}</div>
       <div class="overlay-actions-row">
-        ${a.draft ? `<button class="overlay-action-btn primary" onclick="quickSend('Publish article ${a.id}',null)">Publish</button>` : `<button class="overlay-action-btn" onclick="quickSend('Archive article ${a.id}',null)">Archive</button>`}
+        ${a.draft
+          ? `<button class="overlay-action-btn primary" onclick="quickSend('Publish article ${a.id}',null)">Publish</button>`
+          : `<button class="overlay-action-btn" onclick="quickSend('Archive article ${a.id}',null)">Archive</button>`}
         <button class="overlay-action-btn" onclick="quickSend('Update article ${a.id}',null)">Ask AI to Edit</button>
-        <a href="https://${window._zdSubdomain||''}.zendesk.com/hc/articles/${a.id}" target="_blank" class="overlay-action-btn">Open in Zendesk ↗</a>
+        <button class="overlay-action-btn" onclick="quickSend('Duplicate article ${a.id}',null)">Duplicate</button>
+        <a href="https://${window._zdSubdomain||''}.zendesk.com/hc/articles/${a.id}" target="_blank" class="overlay-action-btn">Open ↗</a>
+      </div>
+      ${sectionOptions ? `<div class="overlay-actions-row" style="margin-top:4px;align-items:center">
+        <span style="font-size:11px;color:var(--text-3);flex-shrink:0">Move to:</span>
+        <select id="move-section-select" style="flex:1;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-s);background:var(--surface);color:var(--text);font-family:inherit;cursor:pointer" onchange="if(this.value){quickSend('Move article ${a.id} to section '+this.value,null);this.value=''}">
+          <option value="">Select section…</option>${sectionOptions}
+        </select>
+      </div>` : ''}
+      <div class="overlay-actions-row" style="margin-top:4px">
+        <button class="overlay-action-btn danger" onclick="if(confirm('Permanently delete this article? This cannot be undone.')){quickSend('Permanently delete article ${a.id}',null);closeDetail()}">Delete permanently</button>
       </div>`;
     recentContext = [{ type: 'article', id: a.id, title: a.title }];
   } catch (e) {
@@ -949,6 +1003,100 @@ async function executeAction(action, log) {
         item.textContent = `✓ Listed ${cachedCategories.length} categories`;
         break;
       }
+      case 'move_article': {
+        const r = await zdFetch('PUT', `/help_center/articles/${action.article_id}`, { article: { section_id: action.section_id } });
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Move failed`; return; }
+        const idx = cachedArticles.findIndex(x => x.id === a.id);
+        if (idx !== -1) cachedArticles[idx] = enrichArticle(a);
+        if (panelOpen) renderPanel();
+        const sec = cachedSections.find(s => s.id === action.section_id);
+        item.textContent = `✓ Moved "${a.title}" → ${sec?.name || action.section_id}`;
+        addMsg('agent', `Moved <strong>"${escHtml(a.title)}"</strong> to <strong>${escHtml(sec?.name || 'section')}</strong>.`, 'success');
+        break;
+      }
+      case 'duplicate_article': {
+        const r = await zdFetch('GET', `/help_center/articles/${action.article_id}`);
+        const orig = r.article;
+        if (!orig) { item.textContent = `✗ Article not found`; return; }
+        const secId = action.section_id || orig.section_id;
+        const payload = { article: {
+          title: action.title || `Copy of ${orig.title}`,
+          body: orig.body || '',
+          locale: orig.locale || 'en-us',
+          draft: true,
+          label_names: orig.label_names || [],
+        }};
+        const cr = await zdFetch('POST', `/help_center/sections/${secId}/articles`, payload);
+        const a = cr.article;
+        if (!a) { item.textContent = `✗ Duplicate failed`; return; }
+        cachedArticles.unshift(enrichArticle(a));
+        if (panelOpen) renderPanel();
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        item.textContent = `✓ Duplicated as "${a.title}"`;
+        addMsg('agent', `Duplicated as <strong>"${escHtml(a.title)}"</strong> (saved as draft).`, 'success');
+        break;
+      }
+      case 'delete_article': {
+        await zdFetch('DELETE', `/help_center/articles/${action.article_id}`);
+        cachedArticles = cachedArticles.filter(x => x.id !== action.article_id);
+        if (panelOpen) renderPanel();
+        item.textContent = `✓ Permanently deleted article ${action.article_id}`;
+        addMsg('agent', `Article permanently deleted.`, 'success');
+        break;
+      }
+      case 'bulk_publish': {
+        let drafts = cachedArticles.filter(a => a.draft);
+        if (action.section_id) drafts = drafts.filter(a => a.section_id === action.section_id);
+        if (!drafts.length) {
+          item.textContent = `✓ No drafts to publish`;
+          addMsg('agent', 'No draft articles found.', 'success');
+          break;
+        }
+        let published = 0;
+        for (const draft of drafts) {
+          try {
+            const r = await zdFetch('PUT', `/help_center/articles/${draft.id}`, { article: { draft: false } });
+            const a = r.article;
+            const idx = cachedArticles.findIndex(x => x.id === draft.id);
+            if (idx !== -1) cachedArticles[idx] = enrichArticle(a);
+            published++;
+            item.textContent = `⏳ Publishing… (${published}/${drafts.length})`;
+          } catch {}
+        }
+        if (panelOpen) renderPanel();
+        item.textContent = `✓ Published ${published} article${published !== 1 ? 's' : ''}`;
+        addMsg('agent', `Published <strong>${published}</strong> draft article${published !== 1 ? 's' : ''}.`, 'success');
+        break;
+      }
+      case 'article_health': {
+        const total = cachedArticles.length;
+        const drafts = cachedArticles.filter(a => a.draft);
+        const published = cachedArticles.filter(a => !a.draft);
+        const unlabeled = published.filter(a => !a.label_names?.length);
+        const now = Date.now();
+        const stale = published.filter(a => a.updated_at && (now - new Date(a.updated_at)) / 86400000 > 365);
+        const recent = published.filter(a => a.updated_at && (now - new Date(a.updated_at)) / 86400000 <= 30);
+
+        const issueRows = [
+          stale.length   ? `<li>⚠️ <strong>${stale.length}</strong> article${stale.length>1?'s':''} not updated in over a year</li>` : '',
+          unlabeled.length ? `<li>🏷 <strong>${unlabeled.length}</strong> published article${unlabeled.length>1?'s':''} without labels</li>` : '',
+          drafts.length  ? `<li>📝 <strong>${drafts.length}</strong> unpublished draft${drafts.length>1?'s':''}</li>` : '',
+        ].filter(Boolean).join('');
+
+        const html =
+          `<strong>📊 Help Center Health</strong><br><br>` +
+          `<strong>Overview</strong><br>` +
+          `• ${total} total articles — ${published.length} published, ${drafts.length} drafts<br>` +
+          `• ${recent.length} updated in the last 30 days<br><br>` +
+          (issueRows ? `<strong>⚠️ Needs Attention</strong><ul style="margin:4px 0 0;padding-left:18px">${issueRows}</ul>` : `<strong>✅ Everything looks good!</strong>`) +
+          (stale.length ? `<br><br><strong>Stale articles</strong><br>${stale.slice(0,5).map(a=>`• ${escHtml(a.title)} <small>(${fmtDate(a.updated_at)})</small>`).join('<br>')}${stale.length>5?`<br><em>…and ${stale.length-5} more</em>`:''}` : '') +
+          (unlabeled.length ? `<br><br><strong>Unlabeled articles</strong><br>${unlabeled.slice(0,5).map(a=>`• ${escHtml(a.title)}`).join('<br>')}${unlabeled.length>5?`<br><em>…and ${unlabeled.length-5} more</em>`:''}` : '');
+
+        addMsg('agent', html);
+        item.textContent = `✓ Health check complete — ${total} articles analysed`;
+        break;
+      }
       default:
         item.textContent = `⚠ Unknown action: ${action.action}`;
     }
@@ -960,16 +1108,21 @@ async function executeAction(action, log) {
 
 function actionLabel(a) {
   const map = {
-    list_articles:   'Listing articles',
-    search_articles: `Searching "${a.query}"`,
-    get_article:     `Opening article ${a.article_id}`,
-    explain_article: `Reading article ${a.article_id}`,
-    create_article:  `Creating "${a.title}"`,
-    update_article:  `Updating article ${a.article_id}`,
-    archive_article: `Archiving article ${a.article_id}`,
-    publish_article: `Publishing article ${a.article_id}`,
-    list_sections:   'Listing sections',
-    list_categories: 'Listing categories',
+    list_articles:    'Listing articles',
+    search_articles:  `Searching "${a.query}"`,
+    get_article:      `Opening article ${a.article_id}`,
+    explain_article:  `Reading article ${a.article_id}`,
+    create_article:   `Creating "${a.title}"`,
+    update_article:   `Updating article ${a.article_id}`,
+    move_article:     `Moving article ${a.article_id}`,
+    duplicate_article:`Duplicating article ${a.article_id}`,
+    archive_article:  `Archiving article ${a.article_id}`,
+    delete_article:   `Deleting article ${a.article_id}`,
+    publish_article:  `Publishing article ${a.article_id}`,
+    bulk_publish:     'Publishing all drafts',
+    article_health:   'Checking Help Center health',
+    list_sections:    'Listing sections',
+    list_categories:  'Listing categories',
   };
   return map[a.action] || a.action;
 }
