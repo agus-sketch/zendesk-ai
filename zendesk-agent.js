@@ -12,6 +12,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN || "";
 const ZENDESK_BASE      = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const SERVER_ZD_EMAIL   = process.env.ZENDESK_EMAIL  || "";
+const SERVER_ZD_TOKEN   = process.env.ZENDESK_TOKEN  || "";
 
 function zendeskAuth(email, token) {
   return `Basic ${Buffer.from(`${email}/token:${token}`).toString("base64")}`;
@@ -57,6 +59,48 @@ const LLM_MODELS = {
   ollama:    "qwen2.5:14b",
   anthropic: "claude-haiku-4-5",
 };
+
+// ── Reader UI ─────────────────────────────────────────────────────────────────
+app.get("/reader", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "reader.html"));
+});
+
+// ── Public read-only Zendesk proxy ────────────────────────────────────────────
+// No user credentials required. Uses server-side creds if set (ZENDESK_EMAIL +
+// ZENDESK_TOKEN in .env), otherwise falls back to unauthenticated access which
+// works for any publicly visible Zendesk Help Center.
+app.post("/zd-public", async (req, res) => {
+  if (!ZENDESK_SUBDOMAIN) {
+    return res.status(503).json({ error: "ZENDESK_SUBDOMAIN not configured." });
+  }
+  const { endpoint } = req.body || {};
+  if (!endpoint || typeof endpoint !== "string") {
+    return res.status(400).json({ error: "Missing endpoint" });
+  }
+  // Whitelist: only read-only Help Center paths
+  const isRelative = !endpoint.startsWith("http");
+  const isSafeRelative = isRelative && /^\/help_center\/(categories|sections|articles)(\/|\?|$)/.test(endpoint);
+  const isSafeAbsolute = !isRelative && endpoint.startsWith(ZENDESK_BASE + "/help_center/");
+  if (!isSafeRelative && !isSafeAbsolute) {
+    return res.status(403).json({ error: "Not allowed" });
+  }
+  try {
+    const url = isRelative ? ZENDESK_BASE + endpoint : endpoint;
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    // Use server credentials if configured, otherwise try unauthenticated (public HC)
+    if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) {
+      headers.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
+    }
+    const r = await fetch(url, { headers });
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { data = { error: `Zendesk error (${r.status})` }; }
+    res.status(r.status).json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get("/config", (req, res) => {
   res.json({ subdomain: ZENDESK_SUBDOMAIN });

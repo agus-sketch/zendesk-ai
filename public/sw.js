@@ -1,6 +1,6 @@
 const CACHE = 'zai-v1';
 const SHELL = ['/'];
-const API = ['/zendesk', '/llm', '/warm', '/config', '/ollama-models', '/download'];
+const API = ['/zendesk', '/zd-public', '/llm', '/warm', '/config', '/ollama-models', '/download'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
