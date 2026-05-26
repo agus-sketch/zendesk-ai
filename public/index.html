@@ -344,6 +344,11 @@ delete_article   — permanently delete an article (irreversible)
 publish_article  — publish a single draft article
 bulk_publish     — publish all drafts, optionally filtered by section_id
 article_health   — audit the Help Center for stale, unlabeled, or draft-heavy areas
+improve_article  — AI-rewrite or improve an existing article based on an instruction
+batch_add_label  — add a label to multiple articles filtered by section or draft status
+batch_remove_label — remove a label from all matching articles
+find_similar     — find similar or duplicate articles to a given article
+content_gaps     — analyse the catalog and suggest missing topics or articles
 list_sections    — list all sections
 list_categories  — list all categories
 
@@ -361,6 +366,13 @@ list_categories  — list all categories
 {"action":"publish_article","article_id":456}
 {"action":"bulk_publish","section_id":123}
 {"action":"article_health"}
+{"action":"improve_article","article_id":456,"instruction":"make it more concise and add a troubleshooting section"}
+{"action":"batch_add_label","label":"onboarding","section_id":123}
+{"action":"batch_add_label","label":"needs-review","draft_only":true}
+{"action":"batch_remove_label","label":"deprecated","section_id":123}
+{"action":"find_similar","article_id":456}
+{"action":"content_gaps"}
+{"action":"content_gaps","section_id":123}
 {"action":"list_sections"}
 {"action":"list_categories"}
 
@@ -389,6 +401,11 @@ follow-up about a recently read article → {"answer": answer from RECENT ARTICL
 "publish article X" → publish_article
 "publish all drafts" / "bulk publish" → bulk_publish
 "health check" / "audit" / "how are my articles doing" / "what needs attention" → article_health
+"improve/rewrite/make better/fix article X" → improve_article with instruction from user or generic if none given
+"add label [L] to [section/drafts/all articles]" → batch_add_label with appropriate filters
+"remove label [L] from [articles/section]" → batch_remove_label with appropriate filters
+"find duplicates/similar/related to article X" → find_similar
+"what articles are missing" / "content gaps" / "what should we write" / "coverage analysis" → content_gaps
 "show sections/categories" → {"answer": HTML list from STATE}
 Match articles by partial title or keywords from ARTICLES in STATE — choose the closest match, never invent IDs
 Resolve "it"/"that"/"this"/"the article" from RECENTLY SHOWN in STATE
@@ -1097,6 +1114,113 @@ async function executeAction(action, log) {
         item.textContent = `✓ Health check complete — ${total} articles analysed`;
         break;
       }
+      case 'improve_article': {
+        const r = await zdFetch('GET', `/help_center/articles/${action.article_id}`);
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Article not found`; return; }
+        const sec = cachedSections.find(s => s.id === a.section_id);
+        item.textContent = `⏳ Reading "${a.title}"…`;
+        const instruction = action.instruction || 'Improve clarity, structure, and completeness. Keep the same topic and professional tone.';
+        const resp = await callLLM([
+          { role: 'system', content: 'You are ZAI. Rewrite the Help Center article body based on the instruction. Return {"answer":"<HTML>"} with the improved body using clean HTML (<h2>/<h3>, <p>, <ul>/<li>, <strong>/<em>). Return only the body content, not the title. No markdown fences.' },
+          { role: 'user', content: `Title: ${a.title}\nInstruction: ${instruction}\n\nCurrent content:\n${stripHtml(a.body)}` },
+        ]);
+        const newBody = resp.answer;
+        if (!newBody) { item.textContent = `✗ Could not generate improved content`; return; }
+        item.textContent = `⏳ Saving improved article…`;
+        const ur = await zdFetch('PUT', `/help_center/articles/${action.article_id}`, { article: { body: newBody } });
+        const updated = ur.article;
+        if (!updated) { item.textContent = `✗ Save failed`; return; }
+        const uidx = cachedArticles.findIndex(x => x.id === updated.id);
+        if (uidx !== -1) cachedArticles[uidx] = enrichArticle(updated);
+        if (panelOpen) renderPanel();
+        recentContext = [{ type: 'article', id: updated.id, title: updated.title }];
+        recentArticleContent = `Title: ${updated.title}\nSection: ${sec?.name || ''}\nStatus: ${updated.draft ? 'Draft' : 'Published'}\n\n${stripHtml(updated.body)}`;
+        item.textContent = `✓ Improved: "${updated.title}"`;
+        addMsg('agent', `Article <strong>"${escHtml(updated.title)}"</strong> has been improved and saved.`, 'success');
+        break;
+      }
+      case 'batch_add_label': {
+        if (!action.label) { item.textContent = `✗ Missing label name`; return; }
+        let targets = [...cachedArticles];
+        if (action.section_id) targets = targets.filter(a => a.section_id === action.section_id);
+        if (action.draft_only) targets = targets.filter(a => a.draft);
+        targets = targets.filter(a => !(a.label_names || []).includes(action.label));
+        if (!targets.length) {
+          item.textContent = `✓ All matching articles already have label "${action.label}"`;
+          addMsg('agent', `All matching articles already have label <strong>"${escHtml(action.label)}"</strong>.`);
+          break;
+        }
+        let done = 0;
+        for (const art of targets) {
+          try {
+            const newLabels = [...(art.label_names || []), action.label];
+            const lr = await zdFetch('PUT', `/help_center/articles/${art.id}`, { article: { label_names: newLabels } });
+            if (lr.article) { const li = cachedArticles.findIndex(x => x.id === art.id); if (li !== -1) cachedArticles[li] = enrichArticle(lr.article); done++; }
+          } catch {}
+          item.textContent = `⏳ Labeling… (${done}/${targets.length})`;
+        }
+        if (panelOpen) renderPanel();
+        item.textContent = `✓ Added label "${action.label}" to ${done} article${done !== 1 ? 's' : ''}`;
+        addMsg('agent', `Added label <strong>"${escHtml(action.label)}"</strong> to <strong>${done}</strong> article${done !== 1 ? 's' : ''}.`, 'success');
+        break;
+      }
+      case 'batch_remove_label': {
+        if (!action.label) { item.textContent = `✗ Missing label name`; return; }
+        let targets = cachedArticles.filter(a => (a.label_names || []).includes(action.label));
+        if (action.section_id) targets = targets.filter(a => a.section_id === action.section_id);
+        if (action.draft_only) targets = targets.filter(a => a.draft);
+        if (!targets.length) {
+          item.textContent = `✓ No articles have label "${action.label}"`;
+          addMsg('agent', `No articles found with label <strong>"${escHtml(action.label)}"</strong>.`);
+          break;
+        }
+        let done = 0;
+        for (const art of targets) {
+          try {
+            const newLabels = (art.label_names || []).filter(l => l !== action.label);
+            const lr = await zdFetch('PUT', `/help_center/articles/${art.id}`, { article: { label_names: newLabels } });
+            if (lr.article) { const li = cachedArticles.findIndex(x => x.id === art.id); if (li !== -1) cachedArticles[li] = enrichArticle(lr.article); done++; }
+          } catch {}
+          item.textContent = `⏳ Removing label… (${done}/${targets.length})`;
+        }
+        if (panelOpen) renderPanel();
+        item.textContent = `✓ Removed label "${action.label}" from ${done} article${done !== 1 ? 's' : ''}`;
+        addMsg('agent', `Removed label <strong>"${escHtml(action.label)}"</strong> from <strong>${done}</strong> article${done !== 1 ? 's' : ''}.`, 'success');
+        break;
+      }
+      case 'find_similar': {
+        const r = await zdFetch('GET', `/help_center/articles/${action.article_id}`);
+        const a = r.article;
+        if (!a) { item.textContent = `✗ Article not found`; return; }
+        const sec = cachedSections.find(s => s.id === a.section_id);
+        item.textContent = `⏳ Analysing "${a.title}" for duplicates…`;
+        const catalog = cachedArticles
+          .filter(x => x.id !== a.id)
+          .map(x => `{id:${x.id}, title:"${x.title.replace(/"/g,'\\"')}", section:"${x._section}"}`)
+          .join('\n');
+        const resp = await callLLM([
+          { role: 'system', content: 'You are ZAI. Compare the target article against the catalog. Return {"answer":"<HTML>"} with up to three groups: <strong>Likely Duplicates</strong>, <strong>Related Articles</strong>, <strong>Possibly Outdated</strong>. For each list the title, section, and ID. Omit empty groups. If nothing notable is found, say so. No markdown fences.' },
+          { role: 'user', content: `Target:\n  ID: ${a.id}\n  Title: ${a.title}\n  Section: ${sec?.name || ''}\n  Content (first 1000 chars): ${stripHtml(a.body).slice(0, 1000)}\n\nCatalog:\n${catalog}` },
+        ]);
+        recentContext = [{ type: 'article', id: a.id, title: a.title }];
+        addMsg('agent', `<strong>Similar to: ${escHtml(a.title)}</strong><br><br>` + (resp.answer || '<em>Could not analyse catalog.</em>'));
+        item.textContent = `✓ Similarity analysis complete for "${a.title}"`;
+        break;
+      }
+      case 'content_gaps': {
+        item.textContent = `⏳ Analysing content coverage…`;
+        const secNames = cachedSections.map(s => s.name).join(', ');
+        const catalog = cachedArticles.map(a => `"${a.title.replace(/"/g,'\\"')}" (${a._section})`).join('\n');
+        const focusNote = action.section_id ? `\n\nFocus especially on section: ${cachedSections.find(s => s.id === action.section_id)?.name || action.section_id}` : '';
+        const resp = await callLLM([
+          { role: 'system', content: 'You are ZAI, a Help Center content strategist. Analyse the catalog and identify gaps — topics users likely need that are not covered. Return {"answer":"<HTML>"} with: 1) a short paragraph on overall coverage, 2) missing topics grouped by section as a bulleted list, 3) five specific article titles to create next. Use <p>, <ul>, <li>, <strong>. No markdown fences.' },
+          { role: 'user', content: `Sections: ${secNames}\n\nExisting articles (${cachedArticles.length} total):\n${catalog}${focusNote}` },
+        ]);
+        addMsg('agent', `<strong>📋 Content Gap Analysis</strong><br><br>` + (resp.answer || '<em>Could not generate analysis.</em>'));
+        item.textContent = `✓ Content gap analysis complete`;
+        break;
+      }
       default:
         item.textContent = `⚠ Unknown action: ${action.action}`;
     }
@@ -1119,10 +1243,15 @@ function actionLabel(a) {
     archive_article:  `Archiving article ${a.article_id}`,
     delete_article:   `Deleting article ${a.article_id}`,
     publish_article:  `Publishing article ${a.article_id}`,
-    bulk_publish:     'Publishing all drafts',
-    article_health:   'Checking Help Center health',
-    list_sections:    'Listing sections',
-    list_categories:  'Listing categories',
+    bulk_publish:       'Publishing all drafts',
+    article_health:     'Checking Help Center health',
+    improve_article:    `Improving article ${a.article_id}`,
+    batch_add_label:    `Adding label "${a.label}"`,
+    batch_remove_label: `Removing label "${a.label}"`,
+    find_similar:       `Finding similar articles to ${a.article_id}`,
+    content_gaps:       'Analysing content gaps',
+    list_sections:      'Listing sections',
+    list_categories:    'Listing categories',
   };
   return map[a.action] || a.action;
 }
