@@ -562,8 +562,14 @@ async function loadZendeskData() {
   cachedCategories = (catRes.categories || []);
   cachedSections   = (secRes.sections   || []);
 
-  const artRes = await zdFetch('GET', '/help_center/articles?per_page=100&sort_by=updated_at&sort_order=desc');
-  cachedArticles = (artRes.articles || []).map(enrichArticle);
+  let allArticles = [];
+  let artUrl = '/help_center/articles?per_page=100&sort_by=updated_at&sort_order=desc';
+  while (artUrl) {
+    const artRes = await zdFetch('GET', artUrl);
+    allArticles.push(...(artRes.articles || []));
+    artUrl = artRes.next_page || null;
+  }
+  cachedArticles = allArticles.map(enrichArticle);
   if (panelOpen) renderPanel();
 }
 
