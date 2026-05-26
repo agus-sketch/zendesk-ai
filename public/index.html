@@ -8,6 +8,10 @@
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#1f73b7" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="ZAI" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -238,6 +242,9 @@
     </div>
     <div class="header-right">
       <div id="status-pill">Not connected</div>
+      <button id="installBtn" class="hdr-btn" onclick="installApp()" title="Install app" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v13"/><polyline points="8 11 12 15 16 11"/><path d="M3 17v2a2 2 0 002 2h14a2 2 0 002-2v-2"/></svg>
+      </button>
       <button id="darkBtn" class="hdr-btn" onclick="toggleDark()" title="Dark mode">
         <svg id="dark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
@@ -335,6 +342,29 @@
 
 <script>
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+// ── PWA install ───────────────────────────────────────────────────────────
+let _installPrompt = null;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _installPrompt = e;
+  $('installBtn').style.display = 'flex';
+});
+window.addEventListener('appinstalled', () => {
+  $('installBtn').style.display = 'none';
+  _installPrompt = null;
+});
+if (isIOS && !isStandalone) $('installBtn').style.display = 'flex';
+function installApp() {
+  if (_installPrompt) {
+    _installPrompt.prompt();
+    _installPrompt.userChoice.then(() => { _installPrompt = null; $('installBtn').style.display = 'none'; });
+  } else {
+    addMsg('agent', 'To install on iOS: tap the <strong>Share</strong> button in Safari, then <strong>Add to Home Screen</strong>.', '');
+  }
+}
 
 const $ = id => document.getElementById(id);
 
