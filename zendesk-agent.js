@@ -110,40 +110,46 @@ app.post("/zd-public", async (req, res) => {
 });
 
 // ── Server-side LLM helper ────────────────────────────────────────────────────
-async function serverLLM(messages) {
-  if (SERVER_LLM_PROVIDER === "none") throw new Error("AI not configured on the server. Add GROQ_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your .env file.");
-
-  if (SERVER_LLM_PROVIDER === "anthropic") {
+async function serverLLM(messages, provider = SERVER_LLM_PROVIDER, key = SERVER_LLM_KEY) {
+  if (provider === "anthropic") {
     const sys  = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
     const conv = messages.filter(m => m.role !== "system");
     const r = await fetch(LLM_URLS.anthropic, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": SERVER_LLM_KEY, "anthropic-version": "2023-06-01" },
+      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: conv, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
     });
     const d = await r.json();
+    if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
     return (d.content || []).map(b => b.text || "").join("");
   }
 
-  const r = await fetch(LLM_URLS[SERVER_LLM_PROVIDER] || LLM_URLS.groq, {
+  const r = await fetch(LLM_URLS[provider] || LLM_URLS.groq, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVER_LLM_KEY}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: LLM_MODELS[SERVER_LLM_PROVIDER] || LLM_MODELS.groq,
+      model: LLM_MODELS[provider] || LLM_MODELS.groq,
       messages, temperature: 0.2, max_tokens: 1024,
       response_format: { type: "json_object" },
     }),
   });
   const d = await r.json();
+  if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
   return d.choices?.[0]?.message?.content || "{}";
 }
 
 // ── Public AI reader chat ─────────────────────────────────────────────────────
 app.post("/reader-chat", async (req, res) => {
   if (!ZENDESK_SUBDOMAIN) return res.status(503).json({ error: "ZENDESK_SUBDOMAIN not configured." });
-  if (SERVER_LLM_PROVIDER === "none") return res.status(503).json({ error: "AI not configured. Add GROQ_API_KEY to .env." });
 
-  const { question } = req.body || {};
+  const { question, llmKey: clientKey, provider: clientProvider } = req.body || {};
+
+  // Prefer client-supplied key; fall back to server-side
+  const useProvider = clientProvider || SERVER_LLM_PROVIDER;
+  const useKey      = clientKey      || SERVER_LLM_KEY;
+  if (!useKey && useProvider !== "ollama") {
+    return res.status(503).json({ error: "No API key available. Enter your key in the settings above or ask the admin to configure one on the server." });
+  }
   if (!question?.trim()) return res.status(400).json({ error: "Missing question" });
 
   const zdHeaders = { Accept: "application/json" };
@@ -180,7 +186,7 @@ app.post("/reader-chat", async (req, res) => {
     const raw = await serverLLM([
       { role: "system", content: `You are a friendly Help Center assistant. Answer the user's question using ONLY the provided article content. Be concise and helpful. Use HTML: <p>, <ul>, <li>, <strong>. If the articles don't fully answer the question, say so honestly — never invent information. Return only a valid JSON object with one key: {"answer":"<HTML string>"}` },
       { role: "user", content: `Articles:\n${context}\n\nQuestion: ${question}` },
-    ]);
+    ], useProvider, useKey);
 
     let answer;
     try {

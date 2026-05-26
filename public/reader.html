@@ -52,8 +52,29 @@
     .header-info { display: flex; flex-direction: column; gap: 1px; }
     .header-title { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: -.01em; }
     .header-sub { font-size: 11px; color: var(--text-3); }
-    #status-dot { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--border); transition: background .3s; }
+    #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); transition: background .3s; flex-shrink: 0; }
     #status-dot.ready { background: var(--green); }
+    .hdr-btn { margin-left: auto; width: 30px; height: 30px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-3); transition: background .15s, color .15s; flex-shrink: 0; }
+    .hdr-btn:hover { background: var(--surface-2); color: var(--text-2); }
+    .hdr-btn.open { background: var(--surface-3); color: var(--text); }
+    .hdr-btn svg { width: 15px; height: 15px; }
+
+    /* ── Config panel ── */
+    #config { overflow: hidden; max-height: 160px; opacity: 1; transition: max-height .3s cubic-bezier(.4,0,.2,1), opacity .25s; border-bottom: 1px solid var(--border-light); background: var(--surface-2); }
+    #config.collapsed { max-height: 0; opacity: 0; }
+    .config-inner { padding: 13px 18px 15px; display: flex; flex-direction: column; gap: 9px; }
+    .config-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+    .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
+    .field label { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+    .field input { padding: 7px 11px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); color: var(--text); outline: none; font-family: inherit; transition: border-color .15s, box-shadow .15s; }
+    .field input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-glow); }
+    .field input::placeholder { color: var(--text-3); }
+    .provider-wrap { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+    .provider-wrap label { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+    .provider-tabs { display: flex; background: var(--surface-3); border-radius: var(--radius-s); padding: 2px; border: 1px solid var(--border); }
+    .pvtab { padding: 5px 11px; font-size: 12px; font-weight: 600; border: none; background: transparent; cursor: pointer; border-radius: 6px; color: var(--text-3); font-family: inherit; transition: background .15s, color .15s; }
+    .pvtab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .config-hint { font-size: 11px; color: var(--text-3); line-height: 1.5; }
 
     /* ── Messages ── */
     #messages {
@@ -141,6 +162,12 @@
     @media (max-width: 640px) {
       body { padding: 0; align-items: stretch; }
       #app { border-radius: 0; border: none; box-shadow: none; height: 100dvh; max-height: none; }
+      #config { max-height: 320px; }
+      .config-row { flex-direction: column; align-items: stretch; }
+      .field { min-width: unset; }
+      .provider-wrap { width: 100%; }
+      .provider-tabs { width: 100%; }
+      .field input { font-size: 16px; }
       #messages { padding: 16px 14px; }
       .msg { max-width: 92%; }
       #inputbar { padding: 10px 12px; padding-bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px)); }
@@ -160,6 +187,29 @@
       <span class="header-sub">Ask me anything</span>
     </div>
     <div id="status-dot" title="Connecting…"></div>
+    <button id="settingsBtn" class="hdr-btn" onclick="toggleConfig()" title="API key settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    </button>
+  </div>
+
+  <div id="config" class="collapsed">
+    <div class="config-inner">
+      <div class="config-row">
+        <div class="field" id="key-field">
+          <label id="key-label">Claude API Key</label>
+          <input type="password" id="llmKey" placeholder="sk-ant-..." />
+        </div>
+        <div class="provider-wrap">
+          <label>Provider</label>
+          <div class="provider-tabs">
+            <button class="pvtab" onclick="setProvider('groq')">Groq</button>
+            <button class="pvtab active" onclick="setProvider('anthropic')">Claude</button>
+            <button class="pvtab" onclick="setProvider('openai')">OpenAI</button>
+          </div>
+        </div>
+      </div>
+      <div class="config-hint">Optional — leave blank to use the server's configured key.</div>
+    </div>
   </div>
 
   <div id="messages">
@@ -182,6 +232,35 @@
 <script>
 const $ = id => document.getElementById(id);
 let busy = false;
+let provider = 'anthropic';
+
+// ── Settings ───────────────────────────────────────────────────────────────────
+const KEY_LABELS = { anthropic: 'Claude API Key', groq: 'Groq API Key', openai: 'OpenAI API Key' };
+const KEY_PH     = { anthropic: 'sk-ant-...', groq: 'gsk_...', openai: 'sk-...' };
+const PROV_STORE = 'reader-provider', KEY_STORE = 'reader-llmkey';
+
+function setProvider(p) {
+  provider = p;
+  document.querySelectorAll('.pvtab').forEach((b, i) =>
+    b.classList.toggle('active', (i===0&&p==='groq')||(i===1&&p==='anthropic')||(i===2&&p==='openai')));
+  $('key-label').textContent = KEY_LABELS[p] || 'API Key';
+  $('llmKey').placeholder    = KEY_PH[p]     || 'API key';
+  localStorage.setItem(PROV_STORE, p);
+}
+
+function toggleConfig() {
+  $('config').classList.toggle('collapsed');
+  $('settingsBtn').classList.toggle('open', !$('config').classList.contains('collapsed'));
+}
+
+function loadStoredKey() {
+  const p = localStorage.getItem(PROV_STORE) || 'anthropic';
+  const k = localStorage.getItem(KEY_STORE)  || '';
+  setProvider(p);
+  $('llmKey').value = k;
+}
+
+$('llmKey').addEventListener('change', () => localStorage.setItem(KEY_STORE, $('llmKey').value.trim()));
 
 // ── Init: ping the server ──────────────────────────────────────────────────────
 async function init() {
@@ -248,10 +327,11 @@ async function send() {
   busy = true; $('sendBtn').disabled = true; addTyping();
 
   try {
+    const clientKey = $('llmKey').value.trim();
     const r = await fetch('/reader-chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: text }),
+      body: JSON.stringify({ question: text, ...(clientKey ? { llmKey: clientKey, provider } : {}) }),
     });
     const data = await r.json();
     removeTyping();
@@ -334,6 +414,7 @@ $('userInput').addEventListener('keydown', e => {
 });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+loadStoredKey();
 init();
 </script>
 </body>
