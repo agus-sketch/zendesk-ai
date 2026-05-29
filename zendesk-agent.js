@@ -64,7 +64,7 @@ const LLM_MODELS = {
   groq:      "llama-3.3-70b-versatile",
   openai:    "gpt-4o-mini",
   ollama:    "qwen2.5:14b",
-  anthropic: "claude-haiku-4-5",
+  anthropic: "claude-haiku-4-5-20251001",
 };
 
 // ── Reader UI ─────────────────────────────────────────────────────────────────
@@ -114,14 +114,15 @@ async function serverLLM(messages, provider = SERVER_LLM_PROVIDER, key = SERVER_
   if (provider === "anthropic") {
     const sys  = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
     const conv = messages.filter(m => m.role !== "system");
+    const convWithPrefill = [...conv, { role: "assistant", content: "{" }];
     const r = await fetch(LLM_URLS.anthropic, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: conv, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
+      body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: convWithPrefill, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
     });
     const d = await r.json();
     if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
-    return (d.content || []).map(b => b.text || "").join("");
+    return "{" + (d.content || []).map(b => b.text || "").join("");
   }
 
   const r = await fetch(LLM_URLS[provider] || LLM_URLS.groq, {
@@ -283,7 +284,8 @@ app.post("/llm", async (req, res) => {
 async function handleAnthropic({ res, llmKey, url, model, msgs }) {
   const sys  = msgs.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n\n");
   const conv = msgs.filter(m => m.role !== "system");
-  const payload = { model, messages: conv, temperature: 0.2, max_tokens: 2048 };
+  const convWithPrefill = [...conv, { role: "assistant", content: "{" }];
+  const payload = { model, messages: convWithPrefill, temperature: 0.2, max_tokens: 2048 };
   if (sys) payload.system = sys;
 
   const ctrl  = new AbortController();
@@ -298,7 +300,7 @@ async function handleAnthropic({ res, llmKey, url, model, msgs }) {
     if (!r.ok) { clearTimeout(timer); return res.status(r.status).json({ error: `Anthropic: ${await r.text()}` }); }
     clearTimeout(timer);
     const data = await r.json();
-    const text = (data.content || []).map(b => b.text || "").join("");
+    const text = "{" + (data.content || []).map(b => b.text || "").join("");
     res.json({ choices: [{ message: { role: "assistant", content: text } }] });
   } catch (e) {
     clearTimeout(timer);

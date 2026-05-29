@@ -228,6 +228,21 @@
       #panel-body { padding-bottom: env(safe-area-inset-bottom); }
       .panel-close-btn { display: flex; }
     }
+
+    /* ── Improve preview overlay ── */
+    .improve-overlay { position: fixed; inset: 0; z-index: 500; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .improve-overlay-inner { background: var(--surface); border-radius: var(--radius-l); border: 1px solid var(--border); width: 100%; max-width: 680px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.2); }
+    .improve-overlay-head { padding: 14px 18px; border-bottom: 1px solid var(--border-light); flex-shrink: 0; }
+    .improve-overlay-head strong { font-size: 14px; color: var(--text); display: block; }
+    .improve-overlay-head span { font-size: 12px; color: var(--text-3); display: block; margin-top: 2px; }
+    .improve-overlay-body { flex: 1; overflow-y: auto; padding: 16px 18px; font-size: 13px; line-height: 1.7; color: var(--text-2); }
+    .improve-overlay-body::-webkit-scrollbar { width: 3px; }
+    .improve-overlay-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .improve-overlay-body h2,.improve-overlay-body h3 { font-size: 13px; font-weight: 700; color: var(--text); margin: 8px 0 4px; }
+    .improve-overlay-body ul,.improve-overlay-body ol { padding-left: 18px; margin: 4px 0; }
+    .improve-overlay-body li { margin: 2px 0; }
+    .improve-overlay-body p { margin: 4px 0; }
+    .improve-overlay-actions { padding: 12px 18px; border-top: 1px solid var(--border-light); display: flex; gap: 8px; flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -266,6 +281,7 @@
       <div class="config-row">
         <div class="field" id="llm-key-field"><label id="llm-key-label">Groq API Key</label><input type="password" id="llmKey" placeholder="Groq API key" /></div>
         <div class="field" id="ollama-model-field" style="display:none"><label>Ollama Model</label><select id="ollamaModelSelect" onchange="ollamaModel=this.value; warmCurrentModel();"></select></div>
+        <div class="field" id="anthropic-model-field" style="display:none"><label>Model</label><select id="anthropicModelSelect" onchange="anthropicModel=this.value;saveKeys()"><option value="claude-haiku-4-5-20251001">Haiku 4.5 — fast</option><option value="claude-sonnet-4-6">Sonnet 4.6 — smarter</option></select></div>
         <div class="provider-wrap">
           <label>Provider</label>
           <div class="provider-tabs">
@@ -340,6 +356,20 @@
   </div>
 </div>
 
+<div id="improve-preview" class="improve-overlay" style="display:none">
+  <div class="improve-overlay-inner">
+    <div class="improve-overlay-head">
+      <strong>Preview improved article</strong>
+      <span id="improve-preview-title"></span>
+    </div>
+    <div class="improve-overlay-body" id="improve-preview-body"></div>
+    <div class="improve-overlay-actions">
+      <button class="overlay-action-btn primary" onclick="resolveImprovePreview(true)">Apply changes</button>
+      <button class="overlay-action-btn" onclick="resolveImprovePreview(false)">Discard</button>
+    </div>
+  </div>
+</div>
+
 <script>
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -370,7 +400,7 @@ const $ = id => document.getElementById(id);
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let busy = false, panelOpen = false, panelFilter = 'all', panelSearch = '';
-let provider = 'groq', groqKey = '', openaiKey = '', anthropicKey = '', ollamaModel = 'qwen2.5:14b';
+let provider = 'groq', groqKey = '', openaiKey = '', anthropicKey = '', ollamaModel = 'qwen2.5:14b', anthropicModel = 'claude-haiku-4-5-20251001';
 let zdEmail = '', zdToken = '';
 let darkMode = false;
 let chatHistory = [];
@@ -480,13 +510,14 @@ Multiple operations in one message → multiple actions in one array`;
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 function saveKeys() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ groq: groqKey, openai: openaiKey, anthropic: anthropicKey, ollama: ollamaModel }));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ groq: groqKey, openai: openaiKey, anthropic: anthropicKey, ollama: ollamaModel, anthropicModel }));
 }
 function loadKeys() {
   try {
     const k = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    groqKey = k.groq || ''; openaiKey = k.openai || ''; anthropicKey = k.anthropic || ''; ollamaModel = k.ollama || 'qwen2.5:14b';
+    groqKey = k.groq || ''; openaiKey = k.openai || ''; anthropicKey = k.anthropic || ''; ollamaModel = k.ollama || 'qwen2.5:14b'; anthropicModel = k.anthropicModel || 'claude-haiku-4-5-20251001';
     $('llmKey').value = provider === 'openai' ? openaiKey : provider === 'anthropic' ? anthropicKey : groqKey;
+    if ($('anthropicModelSelect')) $('anthropicModelSelect').value = anthropicModel;
     return !!(groqKey || openaiKey || anthropicKey || provider === 'ollama');
   } catch { return false; }
 }
@@ -502,6 +533,7 @@ function loadZdCreds() {
   } catch {}
 }
 function activeLLMKey() { return provider === 'openai' ? openaiKey : provider === 'anthropic' ? anthropicKey : provider === 'ollama' ? '' : groqKey; }
+function activeLLMModel() { return provider === 'ollama' ? ollamaModel : provider === 'anthropic' ? anthropicModel : undefined; }
 
 // ── Dark mode ─────────────────────────────────────────────────────────────────
 function applyTheme() {
@@ -522,8 +554,11 @@ async function setProvider(p) {
   document.querySelectorAll('.pvtab').forEach((b, i) =>
     b.classList.toggle('active', (i===0&&p==='groq')||(i===1&&p==='openai')||(i===2&&p==='ollama')||(i===3&&p==='anthropic')));
   const isOllama = p === 'ollama';
-  $('llm-key-field').style.display     = isOllama ? 'none' : '';
-  $('ollama-model-field').style.display = isOllama ? '' : 'none';
+  const isAnthropic = p === 'anthropic';
+  $('llm-key-field').style.display         = isOllama ? 'none' : '';
+  $('ollama-model-field').style.display    = isOllama ? '' : 'none';
+  $('anthropic-model-field').style.display = isAnthropic ? '' : 'none';
+  if (isAnthropic && $('anthropicModelSelect')) $('anthropicModelSelect').value = anthropicModel;
   if (!isOllama) {
     const labels = { openai: 'OpenAI API Key', anthropic: 'Claude API Key', groq: 'Groq API Key' };
     const phs    = { openai: 'sk-...', anthropic: 'sk-ant-...', groq: 'Groq API key' };
@@ -863,7 +898,7 @@ async function send() {
     const r = await fetch('/llm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: provider === 'ollama' ? ollamaModel : undefined }),
+      body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: activeLLMModel() }),
     });
     const data = await r.json();
     removeTyping();
@@ -887,7 +922,7 @@ async function send() {
 
 function buildState() {
   const today = new Date().toISOString().slice(0, 10);
-  const articleSummary = cachedArticles.slice(0, 100).map(a =>
+  const articleSummary = cachedArticles.map(a =>
     `  {id:${a.id}, title:"${a.title.replace(/"/g, '\\"')}", section:"${a._section}", draft:${a.draft}, labels:[${(a.label_names||[]).map(l=>`"${l}"`).join(',')}], updated:"${a.updated_at?.slice(0,10)}"}`
   ).join('\n');
   const sectionSummary = cachedSections.map(s => `  {id:${s.id}, name:"${s.name}", category:"${cachedCategories.find(c=>c.id===s.category_id)?.name||''}"}`).join('\n');
@@ -903,7 +938,7 @@ ${categorySummary || '  (none)'}
 SECTIONS:
 ${sectionSummary || '  (none)'}
 
-ARTICLES (${cachedArticles.length} total, showing up to 100 most recent):
+ARTICLES (${cachedArticles.length} total):
 ${articleSummary || '  (none)'}
 
 RECENTLY SHOWN:
@@ -1143,17 +1178,18 @@ async function executeAction(action, log) {
           addMsg('agent', 'No draft articles found.', 'success');
           break;
         }
+        item.textContent = `⏳ Publishing ${drafts.length} article${drafts.length !== 1 ? 's' : ''}…`;
+        const pubResults = await Promise.allSettled(
+          drafts.map(draft => zdFetch('PUT', `/help_center/articles/${draft.id}`, { article: { draft: false } }))
+        );
         let published = 0;
-        for (const draft of drafts) {
-          try {
-            const r = await zdFetch('PUT', `/help_center/articles/${draft.id}`, { article: { draft: false } });
-            const a = r.article;
-            const idx = cachedArticles.findIndex(x => x.id === draft.id);
-            if (idx !== -1) cachedArticles[idx] = enrichArticle(a);
+        pubResults.forEach((res, i) => {
+          if (res.status === 'fulfilled' && res.value?.article) {
+            const idx = cachedArticles.findIndex(x => x.id === drafts[i].id);
+            if (idx !== -1) cachedArticles[idx] = enrichArticle(res.value.article);
             published++;
-            item.textContent = `⏳ Publishing… (${published}/${drafts.length})`;
-          } catch {}
-        }
+          }
+        });
         if (panelOpen) renderPanel();
         item.textContent = `✓ Published ${published} article${published !== 1 ? 's' : ''}`;
         addMsg('agent', `Published <strong>${published}</strong> draft article${published !== 1 ? 's' : ''}.`, 'success');
@@ -1200,6 +1236,13 @@ async function executeAction(action, log) {
         ]);
         const newBody = resp.answer;
         if (!newBody) { item.textContent = `✗ Could not generate improved content`; return; }
+        item.textContent = `⏳ Preview ready — waiting for approval…`;
+        const approved = await showImprovePreview(a.title, newBody);
+        if (!approved) {
+          item.textContent = `✗ Improvement discarded`;
+          addMsg('agent', `Improvement for <strong>"${escHtml(a.title)}"</strong> was discarded.`);
+          break;
+        }
         item.textContent = `⏳ Saving improved article…`;
         const ur = await zdFetch('PUT', `/help_center/articles/${action.article_id}`, { article: { body: newBody } });
         const updated = ur.article;
@@ -1224,15 +1267,21 @@ async function executeAction(action, log) {
           addMsg('agent', `All matching articles already have label <strong>"${escHtml(action.label)}"</strong>.`);
           break;
         }
-        let done = 0;
-        for (const art of targets) {
-          try {
+        item.textContent = `⏳ Adding label to ${targets.length} article${targets.length !== 1 ? 's' : ''}…`;
+        const addResults = await Promise.allSettled(
+          targets.map(art => {
             const newLabels = [...(art.label_names || []), action.label];
-            const lr = await zdFetch('PUT', `/help_center/articles/${art.id}`, { article: { label_names: newLabels } });
-            if (lr.article) { const li = cachedArticles.findIndex(x => x.id === art.id); if (li !== -1) cachedArticles[li] = enrichArticle(lr.article); done++; }
-          } catch {}
-          item.textContent = `⏳ Labeling… (${done}/${targets.length})`;
-        }
+            return zdFetch('PUT', `/help_center/articles/${art.id}`, { article: { label_names: newLabels } });
+          })
+        );
+        let done = 0;
+        addResults.forEach((res, i) => {
+          if (res.status === 'fulfilled' && res.value?.article) {
+            const li = cachedArticles.findIndex(x => x.id === targets[i].id);
+            if (li !== -1) cachedArticles[li] = enrichArticle(res.value.article);
+            done++;
+          }
+        });
         if (panelOpen) renderPanel();
         item.textContent = `✓ Added label "${action.label}" to ${done} article${done !== 1 ? 's' : ''}`;
         addMsg('agent', `Added label <strong>"${escHtml(action.label)}"</strong> to <strong>${done}</strong> article${done !== 1 ? 's' : ''}.`, 'success');
@@ -1248,15 +1297,21 @@ async function executeAction(action, log) {
           addMsg('agent', `No articles found with label <strong>"${escHtml(action.label)}"</strong>.`);
           break;
         }
-        let done = 0;
-        for (const art of targets) {
-          try {
+        item.textContent = `⏳ Removing label from ${targets.length} article${targets.length !== 1 ? 's' : ''}…`;
+        const rmResults = await Promise.allSettled(
+          targets.map(art => {
             const newLabels = (art.label_names || []).filter(l => l !== action.label);
-            const lr = await zdFetch('PUT', `/help_center/articles/${art.id}`, { article: { label_names: newLabels } });
-            if (lr.article) { const li = cachedArticles.findIndex(x => x.id === art.id); if (li !== -1) cachedArticles[li] = enrichArticle(lr.article); done++; }
-          } catch {}
-          item.textContent = `⏳ Removing label… (${done}/${targets.length})`;
-        }
+            return zdFetch('PUT', `/help_center/articles/${art.id}`, { article: { label_names: newLabels } });
+          })
+        );
+        let done = 0;
+        rmResults.forEach((res, i) => {
+          if (res.status === 'fulfilled' && res.value?.article) {
+            const li = cachedArticles.findIndex(x => x.id === targets[i].id);
+            if (li !== -1) cachedArticles[li] = enrichArticle(res.value.article);
+            done++;
+          }
+        });
         if (panelOpen) renderPanel();
         item.textContent = `✓ Removed label "${action.label}" from ${done} article${done !== 1 ? 's' : ''}`;
         addMsg('agent', `Removed label <strong>"${escHtml(action.label)}"</strong> from <strong>${done}</strong> article${done !== 1 ? 's' : ''}.`, 'success');
@@ -1354,7 +1409,7 @@ async function callLLM(messages) {
   const r = await fetch('/llm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: provider === 'ollama' ? ollamaModel : undefined }),
+    body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: activeLLMModel() }),
   });
   const data = await r.json();
   if (data.error) throw new Error(data.error);
@@ -1366,6 +1421,21 @@ function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined });
+}
+
+// ── Improve preview ──────────────────────────────────────────────────────────
+let _improveResolve = null;
+function showImprovePreview(title, html) {
+  return new Promise(resolve => {
+    _improveResolve = resolve;
+    $('improve-preview-title').textContent = title;
+    $('improve-preview-body').innerHTML = html;
+    $('improve-preview').style.display = 'flex';
+  });
+}
+function resolveImprovePreview(apply) {
+  $('improve-preview').style.display = 'none';
+  if (_improveResolve) { _improveResolve(apply); _improveResolve = null; }
 }
 
 // ── Auto-grow textarea ────────────────────────────────────────────────────────
