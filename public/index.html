@@ -243,6 +243,11 @@
     .improve-overlay-body li { margin: 2px 0; }
     .improve-overlay-body p { margin: 4px 0; }
     .improve-overlay-actions { padding: 12px 18px; border-top: 1px solid var(--border-light); display: flex; gap: 8px; flex-shrink: 0; }
+    .diff-del { background: #ffeef0; color: #b31d28; text-decoration: line-through; }
+    .diff-add { background: #e6ffec; color: #276733; }
+    .improve-tabs { display: flex; gap: 2px; background: var(--surface-3); border-radius: 8px; padding: 2px; margin-bottom: 12px; }
+    .improve-tab { flex: 1; padding: 4px 0; font-size: 11px; font-weight: 600; text-align: center; border: none; background: transparent; cursor: pointer; border-radius: 6px; color: var(--text-3); font-family: inherit; transition: background .15s, color .15s; }
+    .improve-tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   </style>
 </head>
 <body>
@@ -322,6 +327,9 @@
           </button>
           <span class="panel-title">Help Center Articles</span>
           <div class="panel-head-actions">
+            <button class="panel-icon-btn" onclick="quickSend('Create a new article',null)" title="Create new article">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
             <button class="panel-icon-btn" id="downloadBtn" onclick="downloadArticles()" title="Download articles as JSON">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             </button>
@@ -361,6 +369,10 @@
     <div class="improve-overlay-head">
       <strong>Preview improved article</strong>
       <span id="improve-preview-title"></span>
+    </div>
+    <div class="improve-tabs">
+      <button class="improve-tab active" onclick="switchImproveTab('preview',this)">Preview</button>
+      <button class="improve-tab" onclick="switchImproveTab('diff',this)">Changes</button>
     </div>
     <div class="improve-overlay-body" id="improve-preview-body"></div>
     <div class="improve-overlay-actions">
@@ -633,8 +645,9 @@ async function connect() {
       `Connected to <strong>${cfg.subdomain}.zendesk.com</strong> as <strong>${zdEmail}</strong>. Loaded ${cachedArticles.length} article${cachedArticles.length !== 1 ? 's' : ''} across ${cachedSections.length} section${cachedSections.length !== 1 ? 's' : ''}.`
       + '<div class="chips">'
       + '<span class="chip" onclick="quickSend(\'Show me all articles\',this)">List articles</span>'
-      + '<span class="chip" onclick="quickSend(\'Create a new article\',this)">New article</span>'
-      + '<span class="chip" onclick="quickSend(\'Show me the sections\',this)">Sections</span>'
+      + '<span class="chip" onclick="quickSend(\'Health check — what needs attention?\',this)">Health check</span>'
+      + '<span class="chip" onclick="quickSend(\'What content gaps exist in our Help Center?\',this)">Content gaps</span>'
+      + '<span class="chip" onclick="quickSend(\'Show me all draft articles\',this)">Show drafts</span>'
       + '</div>', 'success');
   } catch (e) {
     addMsg('agent', `Connection error: ${e.message}`, 'error');
@@ -765,9 +778,15 @@ function renderPanel() {
     bySec[k].push(a);
   });
 
+  const secCat = {};
+  articles.forEach(a => {
+    const k = a._section || 'Uncategorized';
+    if (!secCat[k] && a._category) secCat[k] = a._category;
+  });
+
   body.innerHTML = Object.entries(bySec).map(([sec, arts]) =>
     `<div>
-      <span class="section-label">${sec}</span>
+      <span class="section-label">${secCat[sec] ? `${escHtml(secCat[sec])} › ` : ''}${escHtml(sec)}</span>
       ${arts.map(a => {
         const labels = a.label_names?.length
           ? `<div class="label-chips">${a.label_names.map(l => `<span class="label-chip">${escHtml(l)}</span>`).join('')}</div>`
@@ -895,22 +914,38 @@ async function send() {
       ...chatHistory.slice(-10),
     ];
 
-    const r = await fetch('/llm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: activeLLMModel() }),
-    });
-    const data = await r.json();
+    let liveBubble = null;
+    const onPartial = (full) => {
+      const partial = extractStreamingAnswer(full);
+      if (partial == null) return;
+      if (!liveBubble) { removeTyping(); liveBubble = addMsg('agent', ''); }
+      liveBubble.querySelector('.bubble').innerHTML = partial;
+      $('messages').scrollTop = $('messages').scrollHeight;
+    };
+
+    let raw;
+    try {
+      raw = await callLLM(messages, onPartial);
+    } catch (e) {
+      removeTyping();
+      addMsg('agent', `LLM error: ${e.message}`, 'error');
+      return;
+    }
     removeTyping();
 
-    if (data.error) { addMsg('agent', `LLM error: ${data.error}`, 'error'); return; }
-
-    const raw = data.choices?.[0]?.message?.content || '{}';
-    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/,'').trim();
     let parsed;
-    try { parsed = JSON.parse(cleaned); }
-    catch { parsed = { answer: raw }; }
+    try { parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()); }
+    catch {
+      // retry once with explicit JSON instruction
+      try {
+        const retryRaw = await callLLM([...messages, { role: 'user', content: 'Your previous response was not valid JSON. Return ONLY a valid JSON object, no text outside it.' }]);
+        parsed = typeof retryRaw === 'object' ? retryRaw : JSON.parse(retryRaw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim());
+      } catch {
+        parsed = { answer: raw };
+      }
+    }
 
+    if (liveBubble) liveBubble.closest('.msg')?.remove();
     await handleLLMResponse(parsed, text);
   } catch (e) {
     removeTyping();
@@ -1237,7 +1272,7 @@ async function executeAction(action, log) {
         const newBody = resp.answer;
         if (!newBody) { item.textContent = `✗ Could not generate improved content`; return; }
         item.textContent = `⏳ Preview ready — waiting for approval…`;
-        const approved = await showImprovePreview(a.title, newBody);
+        const approved = await showImprovePreview(a.title, newBody, a.body || '');
         if (!approved) {
           item.textContent = `✗ Improvement discarded`;
           addMsg('agent', `Improvement for <strong>"${escHtml(a.title)}"</strong> was discarded.`);
@@ -1405,17 +1440,58 @@ function escHtml(s) {
 function stripHtml(html) {
   return (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
-async function callLLM(messages) {
-  const r = await fetch('/llm', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, llmKey: activeLLMKey(), provider, model: activeLLMModel() }),
-  });
-  const data = await r.json();
-  if (data.error) throw new Error(data.error);
-  const raw = data.choices?.[0]?.message?.content || '{}';
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-  try { return JSON.parse(cleaned); } catch { return { answer: raw }; }
+function extractStreamingAnswer(raw) {
+  const m = raw.match(/"answer"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (!m) return null;
+  const inner = m[1];
+  try { return JSON.parse('"' + inner + '"'); }
+  catch {
+    return inner
+      .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, c) => String.fromCharCode(parseInt(c, 16)));
+  }
+}
+async function callLLM(messages, onPartial) {
+  const wantsStream = typeof onPartial === 'function';
+  const body = { messages, llmKey: activeLLMKey(), provider, model: activeLLMModel(), stream: wantsStream };
+  const r = await fetch('/llm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  if (!wantsStream) {
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    const raw = d.choices?.[0]?.message?.content || '{}';
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    try { return JSON.parse(cleaned); } catch { return { answer: raw }; }
+  }
+
+  if (!r.ok || !r.body) {
+    const d = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    throw new Error(d.error?.message || d.error || `HTTP ${r.status}`);
+  }
+
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line || !line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const obj = JSON.parse(data);
+        const delta = obj.choices?.[0]?.delta?.content || '';
+        if (delta) { full += delta; onPartial(full); }
+      } catch {}
+    }
+  }
+  return full;
 }
 function fmtDate(iso) {
   if (!iso) return '';
@@ -1425,17 +1501,57 @@ function fmtDate(iso) {
 
 // ── Improve preview ──────────────────────────────────────────────────────────
 let _improveResolve = null;
-function showImprovePreview(title, html) {
+let _improveOrigBody = '';
+let _improveNewBody = '';
+function showImprovePreview(title, html, origHtml = '') {
   return new Promise(resolve => {
     _improveResolve = resolve;
+    _improveOrigBody = origHtml;
+    _improveNewBody = html;
     $('improve-preview-title').textContent = title;
     $('improve-preview-body').innerHTML = html;
+    // Reset to preview tab
+    document.querySelectorAll('.improve-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
     $('improve-preview').style.display = 'flex';
   });
 }
 function resolveImprovePreview(apply) {
   $('improve-preview').style.display = 'none';
   if (_improveResolve) { _improveResolve(apply); _improveResolve = null; }
+}
+function switchImproveTab(tab, btn) {
+  document.querySelectorAll('.improve-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  const body = $('improve-preview-body');
+  if (tab === 'preview') {
+    body.innerHTML = _improveNewBody;
+  } else {
+    body.innerHTML = computeWordDiff(stripHtml(_improveOrigBody), stripHtml(_improveNewBody));
+  }
+}
+function computeWordDiff(oldStr, newStr) {
+  const ow = oldStr.split(/\b/).filter(Boolean);
+  const nw = newStr.split(/\b/).filter(Boolean);
+  const m = ow.length, n = nw.length;
+  // Cap to avoid UI freeze on very long articles
+  if (m * n > 200000) return `<p><em>Article too long for word diff. Switch to Preview tab to see the result.</em></p>`;
+  const dp = [];
+  for (let i = 0; i <= m; i++) { dp[i] = new Array(n+1).fill(0); }
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+    dp[i][j] = ow[i-1] === nw[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j], dp[i][j-1]);
+  }
+  const parts = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && ow[i-1] === nw[j-1]) { parts.unshift({t:'=',s:ow[i-1]}); i--; j--; }
+    else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) { parts.unshift({t:'+',s:nw[j-1]}); j--; }
+    else { parts.unshift({t:'-',s:ow[i-1]}); i--; }
+  }
+  return parts.map(p => {
+    if (p.t === '=') return escHtml(p.s);
+    if (p.t === '+') return `<span class="diff-add">${escHtml(p.s)}</span>`;
+    return `<span class="diff-del">${escHtml(p.s)}</span>`;
+  }).join('');
 }
 
 // ── Auto-grow textarea ────────────────────────────────────────────────────────
@@ -1452,6 +1568,22 @@ loadZdCreds();
 fetch('/config').then(r => r.json()).then(cfg => {
   window._zdSubdomain = cfg.subdomain;
 }).catch(() => {});
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  // Cmd/Ctrl+K → focus chat input
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    $('userInput').focus();
+    $('userInput').select();
+  }
+  // Escape → close overlays
+  if (e.key === 'Escape') {
+    if ($('improve-preview').style.display !== 'none') { resolveImprovePreview(false); return; }
+    if ($('article-detail').classList.contains('open')) { closeDetail(); return; }
+    if (panelOpen) { togglePanel(); return; }
+  }
+});
 </script>
 </body>
 </html>

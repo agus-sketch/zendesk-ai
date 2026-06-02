@@ -251,11 +251,51 @@ app.post("/llm", async (req, res) => {
   const url   = LLM_URLS[provider]  || LLM_URLS.groq;
   const model = req.body.model      || LLM_MODELS[provider] || LLM_MODELS.groq;
   const msgs  = messages || [{ role: "user", content: prompt }];
+  const wantsStream = !!req.body.stream;
 
-  if (provider === "anthropic") return handleAnthropic({ res, llmKey, url, model, msgs });
+  if (provider === "anthropic") return handleAnthropic({ res, llmKey, url, model, msgs, wantsStream });
 
   const headers = { "Content-Type": "application/json" };
   if (llmKey) headers.Authorization = `Bearer ${llmKey}`;
+
+  const ctrl  = new AbortController();
+  const timeout = provider === "ollama" ? 180000 : 30000;
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+
+  if (wantsStream) {
+    const payload = {
+      model,
+      messages: msgs,
+      temperature: 0.2,
+      max_tokens: 2048,
+      stream: true,
+    };
+    if (provider === "ollama") payload.keep_alive = "30m";
+
+    try {
+      const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: ctrl.signal });
+      clearTimeout(timer);
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      if (!r.ok) { res.end(`data: ${JSON.stringify({ error: `LLM error ${r.status}` })}\n\n`); return; }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { res.end(); return; }
+          res.write(dec.decode(value, { stream: true }));
+        }
+      } catch { res.end(); }
+      return;
+    } catch (e) {
+      clearTimeout(timer);
+      const msg = e.name === "AbortError" ? "LLM timed out — try again" : e.message;
+      if (!res.headersSent) res.status(500).json({ error: msg });
+      return;
+    }
+  }
 
   const payload = {
     model,
@@ -265,10 +305,6 @@ app.post("/llm", async (req, res) => {
     response_format: { type: "json_object" },
   };
   if (provider === "ollama") payload.keep_alive = "30m";
-
-  const ctrl  = new AbortController();
-  const timeout = provider === "ollama" ? 180000 : 30000;
-  const timer = setTimeout(() => ctrl.abort(), timeout);
 
   try {
     const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: ctrl.signal });
@@ -281,7 +317,7 @@ app.post("/llm", async (req, res) => {
   }
 });
 
-async function handleAnthropic({ res, llmKey, url, model, msgs }) {
+async function handleAnthropic({ res, llmKey, url, model, msgs, wantsStream }) {
   const sys  = msgs.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n\n");
   const conv = msgs.filter(m => m.role !== "system");
   const convWithPrefill = [...conv, { role: "assistant", content: "{" }];
