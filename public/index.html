@@ -310,6 +310,9 @@
             <span class="chip" onclick="quickSend('What can I ask you?', this)">What can I do?</span>
             <span class="chip" onclick="quickSend('Show me all articles', this)">List articles</span>
             <span class="chip" onclick="quickSend('Show me the sections', this)">Show sections</span>
+            <span class="chip" onclick="quickSend('Find articles not updated in the last 6 months', this)">Find outdated</span>
+            <span class="chip" onclick="quickSend('List articles grouped by section', this)">By section</span>
+            <span class="chip" onclick="quickSend('Which articles have low vote scores or need improvement?', this)">Low performing</span>
           </div>
         </div>
       </div>
@@ -648,6 +651,9 @@ async function connect() {
       + '<span class="chip" onclick="quickSend(\'Health check — what needs attention?\',this)">Health check</span>'
       + '<span class="chip" onclick="quickSend(\'What content gaps exist in our Help Center?\',this)">Content gaps</span>'
       + '<span class="chip" onclick="quickSend(\'Show me all draft articles\',this)">Show drafts</span>'
+      + '<span class="chip" onclick="quickSend(\'Find articles not updated in the last 6 months\',this)">Find outdated</span>'
+      + '<span class="chip" onclick="quickSend(\'List articles grouped by section\',this)">By section</span>'
+      + '<span class="chip" onclick="quickSend(\'Which articles have low vote scores or need improvement?\',this)">Low performing</span>'
       + '</div>', 'success');
   } catch (e) {
     addMsg('agent', `Connection error: ${e.message}`, 'error');
