@@ -383,13 +383,15 @@ app.post("/warm", async (req, res) => {
 });
 
 // ── Zendesk OAuth routes ──────────────────────────────────────────────────────
+const ZD_OAUTH_CLIENT_ID = process.env.ZENDESK_OAUTH_CLIENT_ID || "zendesk_ai_agent";
+
 app.get("/auth/zendesk", (req, res) => {
   const { slack_user_id } = req.query;
   if (!slack_user_id) return res.status(400).send("Missing slack_user_id");
   const params = new URLSearchParams({
     response_type: "code",
     redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
-    client_id: process.env.ZENDESK_OAUTH_CLIENT_ID || "",
+    client_id: ZD_OAUTH_CLIENT_ID,
     scope: "read",
     state: slack_user_id,
   });
@@ -406,7 +408,7 @@ app.get("/auth/zendesk/callback", async (req, res) => {
       body: JSON.stringify({
         grant_type: "authorization_code",
         code,
-        client_id: process.env.ZENDESK_OAUTH_CLIENT_ID,
+        client_id: ZD_OAUTH_CLIENT_ID,
         client_secret: process.env.ZENDESK_OAUTH_CLIENT_SECRET,
         redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
         scope: "read",
