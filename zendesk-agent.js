@@ -399,8 +399,10 @@ app.get("/auth/zendesk", (req, res) => {
 });
 
 app.get("/auth/zendesk/callback", async (req, res) => {
-  const { code, state: slackUserId } = req.query;
-  if (!code || !slackUserId) return res.status(400).send("Missing code or state");
+  console.log("Zendesk callback params:", JSON.stringify(req.query));
+  const { code, state: slackUserId, error, error_description } = req.query;
+  if (error) return res.status(400).send(`Zendesk OAuth error: ${error} — ${error_description || ""}`);
+  if (!code || !slackUserId) return res.status(400).send(`Missing code or state. Got: ${JSON.stringify(req.query)}`);
   try {
     const r = await fetch(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/oauth/tokens`, {
       method: "POST",
