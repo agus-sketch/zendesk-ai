@@ -27,6 +27,26 @@ function zendeskAuth(email, token) {
   return `Basic ${Buffer.from(`${email}/token:${token}`).toString("base64")}`;
 }
 
+// ── Upstash KV helpers ────────────────────────────────────────────────────────
+async function kvGet(key) {
+  const r = await fetch(`${process.env.KV_REST_API_URL}/get/${encodeURIComponent(key)}`, {
+    headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` },
+  });
+  const d = await r.json();
+  return d.result ?? null;
+}
+async function kvSet(key, value) {
+  await fetch(`${process.env.KV_REST_API_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`, {
+    headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` },
+  });
+}
+
+async function getZendeskTokenForUser(slackUserId) {
+  const raw = await kvGet(`zendesk:${slackUserId}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw).access_token; } catch { return raw; }
+}
+
 async function ensureOllama() {
   try {
     await fetch("http://localhost:11434");
@@ -362,6 +382,52 @@ app.post("/warm", async (req, res) => {
   }
 });
 
+// ── Zendesk OAuth routes ──────────────────────────────────────────────────────
+app.get("/auth/zendesk", (req, res) => {
+  const { slack_user_id } = req.query;
+  if (!slack_user_id) return res.status(400).send("Missing slack_user_id");
+  const params = new URLSearchParams({
+    response_type: "code",
+    redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
+    client_id: process.env.ZENDESK_OAUTH_CLIENT_ID || "",
+    scope: "read",
+    state: slack_user_id,
+  });
+  res.redirect(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/oauth/authorizations/new?${params}`);
+});
+
+app.get("/auth/zendesk/callback", async (req, res) => {
+  const { code, state: slackUserId } = req.query;
+  if (!code || !slackUserId) return res.status(400).send("Missing code or state");
+  try {
+    const r = await fetch(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/oauth/tokens`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code,
+        client_id: process.env.ZENDESK_OAUTH_CLIENT_ID,
+        client_secret: process.env.ZENDESK_OAUTH_CLIENT_SECRET,
+        redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
+        scope: "read",
+      }),
+    });
+    const d = await r.json();
+    if (!d.access_token) return res.status(400).send(`OAuth error: ${JSON.stringify(d)}`);
+    await kvSet(`zendesk:${slackUserId}`, JSON.stringify({ access_token: d.access_token }));
+    res.send("✅ Zendesk connected! You can close this tab and return to Slack.");
+  } catch (e) {
+    res.status(500).send(`Error: ${e.message}`);
+  }
+});
+
+// ── Per-channel conversation history (in-memory, like Minisana) ───────────────
+const slackChannelHistory = new Map();
+function getChannelHistory(channelId) {
+  if (!slackChannelHistory.has(channelId)) slackChannelHistory.set(channelId, []);
+  return slackChannelHistory.get(channelId);
+}
+
 // ── Slack Events API ──────────────────────────────────────────────────────────
 app.post("/slack/events", async (req, res) => {
   const { type, challenge, event } = req.body;
@@ -388,14 +454,18 @@ app.post("/slack/events", async (req, res) => {
   waitUntil((async () => {
     try {
       const question = event.text?.trim();
-      console.log("Slack event received, user:", event.user, "question:", question?.slice(0, 80));
       if (!question) return;
 
-      console.log("ZD config — subdomain:", ZENDESK_SUBDOMAIN, "email set:", !!SERVER_ZD_EMAIL, "token set:", !!SERVER_ZD_TOKEN);
-      const zdHeaders = { Accept: "application/json" };
-      if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) {
-        zdHeaders.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
+      const accessToken = await getZendeskTokenForUser(event.user);
+      if (!accessToken) {
+        const connectUrl = `https://zendesk-ai.vercel.app/auth/zendesk?slack_user_id=${event.user}`;
+        await postMessage(`Hi! I need to connect to your Zendesk account first.\n\n<${connectUrl}|Click here to connect Zendesk> — it takes about 10 seconds.`);
+        return;
       }
+
+      const history = getChannelHistory(event.channel);
+
+      const zdHeaders = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
 
       // Search Zendesk help center for relevant articles
       const searchRes = await fetch(
@@ -403,13 +473,7 @@ app.post("/slack/events", async (req, res) => {
         { headers: zdHeaders }
       );
       const searchData = await searchRes.json();
-      console.log("ZD search results:", searchData.results?.length ?? "error", searchData.error ?? "");
       const topArticles = (searchData.results || []).filter(a => !a.draft).slice(0, 3);
-
-      if (!topArticles.length) {
-        await postMessage("I couldn't find any Help Center articles related to your question. Try rephrasing it.");
-        return;
-      }
 
       // Fetch full article bodies
       const withContent = await Promise.all(topArticles.map(async a => {
@@ -421,12 +485,17 @@ app.post("/slack/events", async (req, res) => {
         } catch { return { title: a.title, url: a.html_url, text: "" }; }
       }));
 
-      // Call LLM
+      // Build user message — include article context if found, otherwise rely on history
       const context = withContent.map(a => `# ${a.title}\n${a.text}`).join("\n\n---\n\n");
-      console.log("Calling LLM, provider:", SERVER_LLM_PROVIDER);
+      const userContent = withContent.length
+        ? `Articles:\n${context}\n\nQuestion: ${question}`
+        : question;
+
+      // Call LLM with full conversation history
       const raw = await serverLLM([
-        { role: "system", content: "You are a friendly Help Center assistant. Answer the user's question using ONLY the provided article content. Be concise. Return plain text with no HTML — use newlines for structure. If the articles don't fully answer the question, say so honestly." },
-        { role: "user", content: `Articles:\n${context}\n\nQuestion: ${question}` },
+        { role: "system", content: "You are a friendly Help Center assistant. When articles are provided, answer using their content. Use conversation history to handle follow-up questions. Be concise. Use plain text with newlines for structure — no HTML." },
+        ...history,
+        { role: "user", content: userContent },
       ]);
 
       let answer;
@@ -435,13 +504,20 @@ app.post("/slack/events", async (req, res) => {
         answer = parsed.answer || raw;
       } catch { answer = raw; }
 
-      // Strip any residual HTML tags for Slack
       answer = answer.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
 
-      const sources = withContent.map(a => `• <${a.url}|${a.title}>`).join("\n");
-      await postMessage(`${answer}\n\n*Sources:*\n${sources}`);
+      // Update history (store plain question, not the article-stuffed version)
+      history.push({ role: "user", content: question });
+      history.push({ role: "assistant", content: answer });
+      if (history.length > 20) history.splice(0, history.length - 20);
+
+      const reply = withContent.length
+        ? `${answer}\n\n*Sources:*\n${withContent.map(a => `• <${a.url}|${a.title}>`).join("\n")}`
+        : answer;
+
+      await postMessage(reply);
     } catch (e) {
-      console.error("Slack handler error:", e.message, e.stack?.split("\n")[1]);
+      console.error("Slack handler error:", e.message);
       await postMessage("Something went wrong. Please try again.").catch(() => {});
     }
   })());
