@@ -374,17 +374,24 @@ app.post("/slack/events", async (req, res) => {
   const slackToken = process.env.SLACK_BOT_TOKEN;
   if (!slackToken) return;
 
-  const postMessage = (text) => fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${slackToken}` },
-    body: JSON.stringify({ channel: event.channel, text }),
-  });
+  const postMessage = async (text) => {
+    const r = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${slackToken}` },
+      body: JSON.stringify({ channel: event.channel, text }),
+    });
+    const d = await r.json();
+    if (!d.ok) console.error("Slack postMessage error:", d.error, "channel:", event.channel);
+    return d;
+  };
 
   waitUntil((async () => {
     try {
       const question = event.text?.trim();
+      console.log("Slack event received, user:", event.user, "question:", question?.slice(0, 80));
       if (!question) return;
 
+      console.log("ZD config — subdomain:", ZENDESK_SUBDOMAIN, "email set:", !!SERVER_ZD_EMAIL, "token set:", !!SERVER_ZD_TOKEN);
       const zdHeaders = { Accept: "application/json" };
       if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) {
         zdHeaders.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
@@ -396,6 +403,7 @@ app.post("/slack/events", async (req, res) => {
         { headers: zdHeaders }
       );
       const searchData = await searchRes.json();
+      console.log("ZD search results:", searchData.results?.length ?? "error", searchData.error ?? "");
       const topArticles = (searchData.results || []).filter(a => !a.draft).slice(0, 3);
 
       if (!topArticles.length) {
@@ -415,6 +423,7 @@ app.post("/slack/events", async (req, res) => {
 
       // Call LLM
       const context = withContent.map(a => `# ${a.title}\n${a.text}`).join("\n\n---\n\n");
+      console.log("Calling LLM, provider:", SERVER_LLM_PROVIDER);
       const raw = await serverLLM([
         { role: "system", content: "You are a friendly Help Center assistant. Answer the user's question using ONLY the provided article content. Be concise. Return plain text with no HTML — use newlines for structure. If the articles don't fully answer the question, say so honestly." },
         { role: "user", content: `Articles:\n${context}\n\nQuestion: ${question}` },
@@ -432,7 +441,7 @@ app.post("/slack/events", async (req, res) => {
       const sources = withContent.map(a => `• <${a.url}|${a.title}>`).join("\n");
       await postMessage(`${answer}\n\n*Sources:*\n${sources}`);
     } catch (e) {
-      console.error("Slack handler error:", e.message);
+      console.error("Slack handler error:", e.message, e.stack?.split("\n")[1]);
       await postMessage("Something went wrong. Please try again.").catch(() => {});
     }
   })());
