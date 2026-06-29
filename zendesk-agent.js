@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { config } from "dotenv";
+import { waitUntil } from "@vercel/functions";
 
 config();
 
@@ -359,6 +360,82 @@ app.post("/warm", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Slack Events API ──────────────────────────────────────────────────────────
+app.post("/slack/events", async (req, res) => {
+  const { type, challenge, event } = req.body;
+
+  if (type === "url_verification") return res.json({ challenge });
+  if (!event || event.bot_id || event.type !== "message") return res.sendStatus(200);
+
+  res.sendStatus(200);
+
+  const slackToken = process.env.SLACK_BOT_TOKEN;
+  if (!slackToken) return;
+
+  const postMessage = (text) => fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${slackToken}` },
+    body: JSON.stringify({ channel: event.channel, text }),
+  });
+
+  waitUntil((async () => {
+    try {
+      const question = event.text?.trim();
+      if (!question) return;
+
+      const zdHeaders = { Accept: "application/json" };
+      if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) {
+        zdHeaders.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
+      }
+
+      // Search Zendesk help center for relevant articles
+      const searchRes = await fetch(
+        `${ZENDESK_BASE}/help_center/articles/search?query=${encodeURIComponent(question)}&per_page=5`,
+        { headers: zdHeaders }
+      );
+      const searchData = await searchRes.json();
+      const topArticles = (searchData.results || []).filter(a => !a.draft).slice(0, 3);
+
+      if (!topArticles.length) {
+        await postMessage("I couldn't find any Help Center articles related to your question. Try rephrasing it.");
+        return;
+      }
+
+      // Fetch full article bodies
+      const withContent = await Promise.all(topArticles.map(async a => {
+        try {
+          const r = await fetch(`${ZENDESK_BASE}/help_center/articles/${a.id}`, { headers: zdHeaders });
+          const d = await r.json();
+          const text = (d.article?.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1500);
+          return { title: a.title, url: a.html_url, text };
+        } catch { return { title: a.title, url: a.html_url, text: "" }; }
+      }));
+
+      // Call LLM
+      const context = withContent.map(a => `# ${a.title}\n${a.text}`).join("\n\n---\n\n");
+      const raw = await serverLLM([
+        { role: "system", content: "You are a friendly Help Center assistant. Answer the user's question using ONLY the provided article content. Be concise. Return plain text with no HTML — use newlines for structure. If the articles don't fully answer the question, say so honestly." },
+        { role: "user", content: `Articles:\n${context}\n\nQuestion: ${question}` },
+      ]);
+
+      let answer;
+      try {
+        const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim());
+        answer = parsed.answer || raw;
+      } catch { answer = raw; }
+
+      // Strip any residual HTML tags for Slack
+      answer = answer.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+
+      const sources = withContent.map(a => `• <${a.url}|${a.title}>`).join("\n");
+      await postMessage(`${answer}\n\n*Sources:*\n${sources}`);
+    } catch (e) {
+      console.error("Slack handler error:", e.message);
+      await postMessage("Something went wrong. Please try again.").catch(() => {});
+    }
+  })());
 });
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
