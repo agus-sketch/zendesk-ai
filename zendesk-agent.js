@@ -267,7 +267,8 @@ app.post("/zendesk", async (req, res) => {
 
 // ── LLM proxy ─────────────────────────────────────────────────────────────────
 app.post("/llm", async (req, res) => {
-  const { messages, prompt, llmKey, provider = "groq" } = req.body;
+  const { messages, prompt, provider = "groq" } = req.body;
+  const llmKey = req.body.llmKey || (provider === "anthropic" ? SERVER_ANTHROPIC_KEY : provider === "openai" ? SERVER_OPENAI_KEY : provider === "groq" ? SERVER_GROQ_KEY : "");
   if (!llmKey && provider !== "ollama") return res.status(400).json({ error: "Missing LLM API key" });
 
   const url   = LLM_URLS[provider]  || LLM_URLS.groq;
