@@ -526,7 +526,7 @@ app.post("/slack/events", async (req, res) => {
 
       // Call LLM with full conversation history (plain text, no JSON wrapping)
       const answer = (await serverLLM([
-        { role: "system", content: "You are a helpful BankingBridge Help Center assistant with access to a Zendesk knowledge base of 150+ articles. For each user message, the system searches the full Zendesk Help Center and retrieves the most relevant articles for you. Answer based on those articles. If the retrieved articles don't fully answer the question, say so and suggest the user rephrase or ask about a more specific topic — do NOT say you can only see what's shared with you. Be concise. Use plain text with newlines for structure — no HTML, no JSON." },
+        { role: "system", content: "You are a helpful BankingBridge Help Center assistant with access to a Zendesk knowledge base of 150+ articles. For each user message, the system searches the full Zendesk Help Center and retrieves the most relevant articles for you. Answer based on those articles. If the retrieved articles don't fully answer the question, say so and suggest the user rephrase or ask about a more specific topic — do NOT say you can only see what's shared with you. Be concise. Use Slack formatting only: *bold* for bold, _italic_ for italic, bullet points with •. No HTML, no markdown ##, no **double asterisks**." },
         ...history,
         { role: "user", content: userContent },
       ], SERVER_LLM_PROVIDER, SERVER_LLM_KEY, false)).replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
