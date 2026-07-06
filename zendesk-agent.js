@@ -131,19 +131,20 @@ app.post("/zd-public", async (req, res) => {
 });
 
 // ── Server-side LLM helper ────────────────────────────────────────────────────
-async function serverLLM(messages, provider = SERVER_LLM_PROVIDER, key = SERVER_LLM_KEY) {
+async function serverLLM(messages, provider = SERVER_LLM_PROVIDER, key = SERVER_LLM_KEY, json = true) {
   if (provider === "anthropic") {
     const sys  = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
     const conv = messages.filter(m => m.role !== "system");
-    const convWithPrefill = [...conv, { role: "assistant", content: "{" }];
+    const apiMessages = json ? [...conv, { role: "assistant", content: "{" }] : conv;
     const r = await fetch(LLM_URLS.anthropic, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: convWithPrefill, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
+      body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: apiMessages, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
     });
     const d = await r.json();
     if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
-    return "{" + (d.content || []).map(b => b.text || "").join("");
+    const text = (d.content || []).map(b => b.text || "").join("");
+    return json ? "{" + text : text;
   }
 
   const r = await fetch(LLM_URLS[provider] || LLM_URLS.groq, {
@@ -419,7 +420,35 @@ app.get("/auth/zendesk/callback", async (req, res) => {
     const d = await r.json();
     if (!d.access_token) return res.status(400).send(`OAuth error: ${JSON.stringify(d)}`);
     await kvSet(`zendesk:${slackUserId}`, JSON.stringify({ access_token: d.access_token }));
-    res.send("✅ Zendesk connected! You can close this tab and return to Slack.");
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zendesk Connected</title>
+  <style>
+    body { margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .card { background: white; border-radius: 16px; padding: 48px 56px; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,0.08); max-width: 400px; }
+    .icon { font-size: 56px; margin-bottom: 16px; }
+    h1 { margin: 0 0 8px; font-size: 22px; color: #111; }
+    p { margin: 0 0 24px; color: #6b7280; font-size: 15px; line-height: 1.5; }
+    .countdown { font-size: 13px; color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h1>Zendesk Connected!</h1>
+    <p>Your account is linked. You can now ask questions directly in Slack and get answers from your Zendesk Help Center.</p>
+    <div class="countdown">This tab will close in <span id="n">3</span> seconds…</div>
+  </div>
+  <script>
+    let s = 3;
+    const el = document.getElementById("n");
+    const t = setInterval(() => { el.textContent = --s; if (s <= 0) { clearInterval(t); window.close(); } }, 1000);
+  </script>
+</body>
+</html>`);
   } catch (e) {
     res.status(500).send(`Error: ${e.message}`);
   }
@@ -495,20 +524,12 @@ app.post("/slack/events", async (req, res) => {
         ? `Articles:\n${context}\n\nQuestion: ${question}`
         : question;
 
-      // Call LLM with full conversation history
-      const raw = await serverLLM([
-        { role: "system", content: "You are a friendly Help Center assistant. When articles are provided, answer using their content. Use conversation history to handle follow-up questions. Be concise. Use plain text with newlines for structure — no HTML." },
+      // Call LLM with full conversation history (plain text, no JSON wrapping)
+      const answer = (await serverLLM([
+        { role: "system", content: "You are a friendly Help Center assistant. When articles are provided, answer using their content. Use conversation history to handle follow-up questions. Be concise. Use plain text with newlines for structure — no HTML, no JSON." },
         ...history,
         { role: "user", content: userContent },
-      ]);
-
-      let answer;
-      try {
-        const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim());
-        answer = parsed.answer || raw;
-      } catch { answer = raw; }
-
-      answer = answer.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+      ], SERVER_LLM_PROVIDER, SERVER_LLM_KEY, false)).replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
 
       // Update history (store plain question, not the article-stuffed version)
       history.push({ role: "user", content: question });
