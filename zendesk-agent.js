@@ -393,7 +393,7 @@ app.get("/auth/zendesk", (req, res) => {
     response_type: "code",
     redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
     client_id: ZD_OAUTH_CLIENT_ID,
-    scope: "read",
+    scope: "read write",
     state: slack_user_id,
   });
   res.redirect(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/oauth/authorizations/new?${params}`);
@@ -454,7 +454,167 @@ app.get("/auth/zendesk/callback", async (req, res) => {
   }
 });
 
-// ── Per-channel conversation history (in-memory, like Minisana) ───────────────
+// ── Zendesk agent tools (for Claude tool_use) ────────────────────────────────
+const ZENDESK_TOOLS = [
+  {
+    name: "search_articles",
+    description: "Search Help Center articles by keyword. Use this to find articles before reading or editing them.",
+    input_schema: { type: "object", properties: { query: { type: "string", description: "Search query" } }, required: ["query"] },
+  },
+  {
+    name: "get_article",
+    description: "Get the full content of a specific article by ID.",
+    input_schema: { type: "object", properties: { article_id: { type: "number", description: "The article ID" } }, required: ["article_id"] },
+  },
+  {
+    name: "update_article",
+    description: "Update an existing article's title and/or body HTML content.",
+    input_schema: {
+      type: "object",
+      properties: {
+        article_id: { type: "number", description: "The article ID to update" },
+        title: { type: "string", description: "New title (omit to keep existing)" },
+        body: { type: "string", description: "New HTML body (omit to keep existing)" },
+      },
+      required: ["article_id"],
+    },
+  },
+  {
+    name: "create_article",
+    description: "Create a new article in a section.",
+    input_schema: {
+      type: "object",
+      properties: {
+        section_id: { type: "number", description: "Section ID where the article will live" },
+        title: { type: "string" },
+        body: { type: "string", description: "HTML body content" },
+      },
+      required: ["section_id", "title", "body"],
+    },
+  },
+  {
+    name: "list_sections",
+    description: "List all Help Center sections with their IDs, names, and category IDs.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "create_section",
+    description: "Create a new section inside a category.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category_id: { type: "number", description: "Category ID" },
+        name: { type: "string", description: "Section name" },
+        description: { type: "string", description: "Optional description" },
+      },
+      required: ["category_id", "name"],
+    },
+  },
+  {
+    name: "list_categories",
+    description: "List all Help Center categories with their IDs and names.",
+    input_schema: { type: "object", properties: {} },
+  },
+];
+
+async function runZendeskTool(name, input, zdHeaders) {
+  switch (name) {
+    case "search_articles": {
+      const r = await fetch(`${ZENDESK_BASE}/help_center/articles/search?query=${encodeURIComponent(input.query)}&per_page=10`, { headers: zdHeaders });
+      const d = await r.json();
+      return (d.results || []).filter(a => !a.draft).slice(0, 5).map(a => ({ id: a.id, title: a.title, url: a.html_url, section_id: a.section_id }));
+    }
+    case "get_article": {
+      const r = await fetch(`${ZENDESK_BASE}/help_center/articles/${input.article_id}`, { headers: zdHeaders });
+      const d = await r.json();
+      const a = d.article;
+      if (!a) return { error: "Article not found" };
+      return { id: a.id, title: a.title, body: a.body, section_id: a.section_id, url: a.html_url };
+    }
+    case "update_article": {
+      const body = {};
+      if (input.title) body.title = input.title;
+      if (input.body) body.body = input.body;
+      const r = await fetch(`${ZENDESK_BASE}/help_center/articles/${input.article_id}`, {
+        method: "PUT",
+        headers: { ...zdHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ article: body }),
+      });
+      const d = await r.json();
+      return r.ok ? { success: true, id: d.article?.id, title: d.article?.title } : { error: d.error || d.description || "Update failed" };
+    }
+    case "create_article": {
+      const r = await fetch(`${ZENDESK_BASE}/help_center/sections/${input.section_id}/articles`, {
+        method: "POST",
+        headers: { ...zdHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ article: { title: input.title, body: input.body, locale: "en-us" } }),
+      });
+      const d = await r.json();
+      return r.ok ? { success: true, id: d.article?.id, title: d.article?.title, url: d.article?.html_url } : { error: d.error || d.description || "Create failed" };
+    }
+    case "list_sections": {
+      const r = await fetch(`${ZENDESK_BASE}/help_center/sections?per_page=100`, { headers: zdHeaders });
+      const d = await r.json();
+      return (d.sections || []).map(s => ({ id: s.id, name: s.name, category_id: s.category_id }));
+    }
+    case "create_section": {
+      const body = { name: input.name, locale: "en-us" };
+      if (input.description) body.description = input.description;
+      const r = await fetch(`${ZENDESK_BASE}/help_center/categories/${input.category_id}/sections`, {
+        method: "POST",
+        headers: { ...zdHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ section: body }),
+      });
+      const d = await r.json();
+      return r.ok ? { success: true, id: d.section?.id, name: d.section?.name } : { error: d.error || d.description || "Create failed" };
+    }
+    case "list_categories": {
+      const r = await fetch(`${ZENDESK_BASE}/help_center/categories?per_page=100`, { headers: zdHeaders });
+      const d = await r.json();
+      return (d.categories || []).map(c => ({ id: c.id, name: c.name }));
+    }
+    default:
+      return { error: "Unknown tool" };
+  }
+}
+
+async function runZendeskAgent(userMessage, history, zdHeaders) {
+  const messages = [...history, { role: "user", content: userMessage }];
+  const system = "You are a helpful BankingBridge Zendesk Help Center agent. You can search, read, create, and edit Help Center articles and sections using the available tools. For questions, search for relevant articles first and answer from their content. For write operations (edit/create), use the appropriate tools and confirm what you did. Be concise. Use Slack formatting: *bold* not **bold**, _italic_, bullet points with •. No HTML in your final text replies.";
+
+  let loopMessages = [...messages];
+
+  for (let i = 0; i < 10; i++) {
+    const r = await fetch(LLM_URLS.anthropic, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": SERVER_ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: LLM_MODELS.anthropic, system, messages: loopMessages, tools: ZENDESK_TOOLS, max_tokens: 2048, temperature: 0.2 }),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+
+    if (d.stop_reason === "end_turn") {
+      return (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+    }
+
+    if (d.stop_reason === "tool_use") {
+      loopMessages.push({ role: "assistant", content: d.content });
+      const toolResults = await Promise.all(
+        (d.content || []).filter(b => b.type === "tool_use").map(async tool => ({
+          type: "tool_result",
+          tool_use_id: tool.id,
+          content: JSON.stringify(await runZendeskTool(tool.name, tool.input, zdHeaders)),
+        }))
+      );
+      loopMessages.push({ role: "user", content: toolResults });
+    } else {
+      return (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+    }
+  }
+  return "I wasn't able to complete that. Please try again.";
+}
+
+// ── Per-channel conversation history ─────────────────────────────────────────
 const slackChannelHistory = new Map();
 function getChannelHistory(channelId) {
   if (!slackChannelHistory.has(channelId)) slackChannelHistory.set(channelId, []);
@@ -497,50 +657,16 @@ app.post("/slack/events", async (req, res) => {
       }
 
       const history = getChannelHistory(event.channel);
+      const zdHeaders = { Accept: "application/json", Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
 
-      const zdHeaders = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
+      const answer = await runZendeskAgent(question, history, zdHeaders);
 
-      // Search Zendesk help center for relevant articles
-      const searchRes = await fetch(
-        `${ZENDESK_BASE}/help_center/articles/search?query=${encodeURIComponent(question)}&per_page=5`,
-        { headers: zdHeaders }
-      );
-      const searchData = await searchRes.json();
-      const topArticles = (searchData.results || []).filter(a => !a.draft).slice(0, 3);
-
-      // Fetch full article bodies
-      const withContent = await Promise.all(topArticles.map(async a => {
-        try {
-          const r = await fetch(`${ZENDESK_BASE}/help_center/articles/${a.id}`, { headers: zdHeaders });
-          const d = await r.json();
-          const text = (d.article?.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1500);
-          return { title: a.title, url: a.html_url, text };
-        } catch { return { title: a.title, url: a.html_url, text: "" }; }
-      }));
-
-      // Build user message — include article context if found, otherwise rely on history
-      const context = withContent.map(a => `# ${a.title}\n${a.text}`).join("\n\n---\n\n");
-      const userContent = withContent.length
-        ? `Articles:\n${context}\n\nQuestion: ${question}`
-        : question;
-
-      // Call LLM with full conversation history (plain text, no JSON wrapping)
-      const answer = (await serverLLM([
-        { role: "system", content: "You are a helpful BankingBridge Help Center assistant with access to a Zendesk knowledge base of 150+ articles. For each user message, the system searches the full Zendesk Help Center and retrieves the most relevant articles for you. Answer based on those articles. If the retrieved articles don't fully answer the question, say so and suggest the user rephrase or ask about a more specific topic — do NOT say you can only see what's shared with you. Be concise. Use Slack formatting only: *bold* for bold, _italic_ for italic, bullet points with •. No HTML, no markdown ##, no **double asterisks**." },
-        ...history,
-        { role: "user", content: userContent },
-      ], SERVER_LLM_PROVIDER, SERVER_LLM_KEY, false)).replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
-
-      // Update history (store plain question, not the article-stuffed version)
+      // Keep history as plain user/assistant pairs
       history.push({ role: "user", content: question });
       history.push({ role: "assistant", content: answer });
       if (history.length > 20) history.splice(0, history.length - 20);
 
-      const reply = withContent.length
-        ? `${answer}\n\n*Sources:*\n${withContent.map(a => `• <${a.url}|${a.title}>`).join("\n")}`
-        : answer;
-
-      await postMessage(reply);
+      await postMessage(answer);
     } catch (e) {
       console.error("Slack handler error:", e.message);
       await postMessage("Something went wrong. Please try again.").catch(() => {});
