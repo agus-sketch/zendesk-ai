@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { config } from "dotenv";
@@ -32,13 +33,40 @@ async function kvGet(key) {
   const r = await fetch(`${process.env.KV_REST_API_URL}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` },
   });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`kvGet failed (${r.status}): ${text.slice(0, 300)}`);
+  }
   const d = await r.json();
+  if (d.error) throw new Error(`kvGet error: ${d.error}`);
   return d.result ?? null;
 }
-async function kvSet(key, value) {
-  await fetch(`${process.env.KV_REST_API_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`, {
+// ttlSeconds: optional expiry (Upstash REST maps path segments to Redis command args, so
+// `SET key value EX <ttl>` becomes `/set/<key>/<value>/EX/<ttl>`).
+async function kvSet(key, value, ttlSeconds) {
+  const segments = [`set`, encodeURIComponent(key), encodeURIComponent(value)];
+  if (ttlSeconds) segments.push("EX", String(ttlSeconds));
+  const r = await fetch(`${process.env.KV_REST_API_URL}/${segments.join("/")}`, {
     headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` },
   });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`kvSet failed (${r.status}): ${text.slice(0, 300)}`);
+  }
+  const d = await r.json().catch(() => ({}));
+  if (d.error) throw new Error(`kvSet error: ${d.error}`);
+  return d;
+}
+async function kvDel(key) {
+  const r = await fetch(`${process.env.KV_REST_API_URL}/del/${encodeURIComponent(key)}`, {
+    headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` },
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    console.error(`kvDel failed (${r.status}) for key ${key}: ${text.slice(0, 300)}`);
+    return false;
+  }
+  return true;
 }
 
 async function getZendeskTokenForUser(slackUserId) {
@@ -72,8 +100,41 @@ async function installedOllamaModels() {
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "4mb" }));
+app.use(express.json({
+  limit: "4mb",
+  // Stash the raw body bytes so /slack/events can verify Slack's HMAC signature,
+  // which is computed over the exact raw request body.
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.static(path.join(__dirname, "public")));
+
+// ── Slack request signature verification ─────────────────────────────────────
+// https://api.slack.com/authentication/verifying-requests-from-slack
+const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
+function verifySlackSignature(req, res, next) {
+  if (!SLACK_SIGNING_SECRET) {
+    console.error("SLACK_SIGNING_SECRET not configured — rejecting Slack request");
+    return res.sendStatus(401);
+  }
+  const timestamp = req.headers["x-slack-request-timestamp"];
+  const signature  = req.headers["x-slack-signature"];
+  if (!timestamp || !signature) return res.sendStatus(401);
+
+  // Reject requests older than 5 minutes to prevent replay attacks
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - Number(timestamp)) > 60 * 5) return res.sendStatus(401);
+
+  const rawBody = req.rawBody ? req.rawBody.toString("utf8") : "";
+  const base = `v0:${timestamp}:${rawBody}`;
+  const expected = "v0=" + crypto.createHmac("sha256", SLACK_SIGNING_SECRET).update(base).digest("hex");
+
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return res.sendStatus(401);
+  }
+  next();
+}
 
 const LLM_URLS = {
   groq:      "https://api.groq.com/openai/v1/chat/completions",
@@ -241,6 +302,11 @@ app.get("/ollama-models", async (req, res) => {
 app.post("/zendesk", async (req, res) => {
   const { method, endpoint, body, email, token } = req.body;
   if (!endpoint)        return res.status(400).json({ error: "Missing endpoint" });
+  // Only allow relative paths under ZENDESK_BASE — reject absolute/external URLs
+  // and protocol-relative paths to prevent SSRF via the stored Zendesk auth header.
+  if (typeof endpoint !== "string" || !endpoint.startsWith("/") || endpoint.startsWith("//") || endpoint.includes("://")) {
+    return res.status(400).json({ error: "Invalid endpoint — must be a relative Zendesk API path" });
+  }
   if (!email || !token) return res.status(400).json({ error: "Missing Zendesk credentials" });
   if (!ZENDESK_SUBDOMAIN) return res.status(400).json({ error: "ZENDESK_SUBDOMAIN not set in .env" });
   try {
@@ -253,7 +319,7 @@ app.post("/zendesk", async (req, res) => {
       },
     };
     if (body && method !== "GET") opts.body = JSON.stringify(body);
-    const url = endpoint.startsWith("http") ? endpoint : ZENDESK_BASE + endpoint;
+    const url = ZENDESK_BASE + endpoint;
     const r = await fetch(url, opts);
     const text = await r.text();
     let data;
@@ -387,24 +453,50 @@ app.post("/warm", async (req, res) => {
 // ── Zendesk OAuth routes ──────────────────────────────────────────────────────
 const ZD_OAUTH_CLIENT_ID = process.env.ZENDESK_OAUTH_CLIENT_ID || "zendesk_ai_agent";
 
-app.get("/auth/zendesk", (req, res) => {
+// Slack tools include write operations (update_article, create_article, create_section),
+// so the scope requested here must match what's exchanged in the callback below.
+const ZD_OAUTH_SCOPE = "read write";
+const OAUTH_STATE_TTL_SECONDS = 600; // 10 minutes
+
+app.get("/auth/zendesk", async (req, res) => {
   const { slack_user_id } = req.query;
   if (!slack_user_id) return res.status(400).send("Missing slack_user_id");
+
+  const state = crypto.randomBytes(16).toString("hex");
+  try {
+    await kvSet(`oauth_state:${state}`, slack_user_id, OAUTH_STATE_TTL_SECONDS);
+  } catch (e) {
+    console.error("Failed to store OAuth state:", e.message);
+    return res.status(500).send("Failed to start the Zendesk connection flow. Please try again.");
+  }
+
   const params = new URLSearchParams({
     response_type: "code",
     redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
     client_id: ZD_OAUTH_CLIENT_ID,
-    scope: "read write",
-    state: slack_user_id,
+    scope: ZD_OAUTH_SCOPE,
+    state,
   });
   res.redirect(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/oauth/authorizations/new?${params}`);
 });
 
 app.get("/auth/zendesk/callback", async (req, res) => {
   console.log("Zendesk callback params:", JSON.stringify(req.query));
-  const { code, state: slackUserId, error, error_description } = req.query;
+  const { code, state, error, error_description } = req.query;
   if (error) return res.status(400).send(`Zendesk OAuth error: ${error} — ${error_description || ""}`);
-  if (!code || !slackUserId) return res.status(400).send(`Missing code or state. Got: ${JSON.stringify(req.query)}`);
+  if (!code || !state) return res.status(400).send(`Missing code or state. Got: ${JSON.stringify(req.query)}`);
+
+  let slackUserId;
+  try {
+    slackUserId = await kvGet(`oauth_state:${state}`);
+  } catch (e) {
+    console.error("Failed to look up OAuth state:", e.message);
+    return res.status(500).send("Failed to verify the connection request. Please try again.");
+  }
+  if (!slackUserId) {
+    return res.status(400).send("This connection link has expired or is invalid. Please restart from Slack.");
+  }
+
   try {
     const r = await fetch(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/oauth/tokens`, {
       method: "POST",
@@ -415,12 +507,13 @@ app.get("/auth/zendesk/callback", async (req, res) => {
         client_id: ZD_OAUTH_CLIENT_ID,
         client_secret: process.env.ZENDESK_OAUTH_CLIENT_SECRET,
         redirect_uri: "https://zendesk-ai.vercel.app/auth/zendesk/callback",
-        scope: "read",
+        scope: ZD_OAUTH_SCOPE,
       }),
     });
     const d = await r.json();
     if (!d.access_token) return res.status(400).send(`OAuth error: ${JSON.stringify(d)}`);
     await kvSet(`zendesk:${slackUserId}`, JSON.stringify({ access_token: d.access_token }));
+    await kvDel(`oauth_state:${state}`);
     res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -616,14 +709,32 @@ async function runZendeskAgent(userMessage, history, zdHeaders) {
 }
 
 // ── Per-channel conversation history ─────────────────────────────────────────
-const slackChannelHistory = new Map();
-function getChannelHistory(channelId) {
-  if (!slackChannelHistory.has(channelId)) slackChannelHistory.set(channelId, []);
-  return slackChannelHistory.get(channelId);
+// Persisted in the same KV store used for OAuth tokens so history survives
+// serverless cold starts (an in-memory Map does not survive across invocations
+// on Vercel). Capped to the last CHANNEL_HISTORY_LIMIT messages before writing.
+const CHANNEL_HISTORY_LIMIT = 20; // ~10 user/assistant turns
+async function getChannelHistory(channelId) {
+  try {
+    const raw = await kvGet(`slack_history:${channelId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.error("Failed to load channel history:", e.message);
+    return [];
+  }
+}
+async function saveChannelHistory(channelId, history) {
+  const capped = history.slice(-CHANNEL_HISTORY_LIMIT);
+  try {
+    await kvSet(`slack_history:${channelId}`, JSON.stringify(capped));
+  } catch (e) {
+    console.error("Failed to save channel history:", e.message);
+  }
 }
 
 // ── Slack Events API ──────────────────────────────────────────────────────────
-app.post("/slack/events", async (req, res) => {
+app.post("/slack/events", verifySlackSignature, async (req, res) => {
   const { type, challenge, event } = req.body;
 
   if (type === "url_verification") return res.json({ challenge });
