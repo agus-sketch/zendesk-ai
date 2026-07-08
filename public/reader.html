@@ -12,6 +12,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Help Center" />
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -312,7 +313,8 @@ function addMsg(role, html, type = '') {
   const wrap = $('messages');
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-  div.innerHTML = `<div class="bubble${type ? ' ' + type : ''}">${html}</div><span class="msg-time">${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>`;
+  // html may contain LLM-generated or Zendesk-article-derived markup — sanitize it.
+  div.innerHTML = `<div class="bubble${type ? ' ' + type : ''}">${DOMPurify.sanitize(html)}</div><span class="msg-time">${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>`;
   wrap.appendChild(div);
   wrap.scrollTop = wrap.scrollHeight;
   return div;
@@ -402,7 +404,7 @@ async function openArticle(id, title) {
       `<strong>${escHtml(a.title)}</strong><br>` +
       `<small style="color:var(--text-3)">Updated ${fmtDate(a.updated_at)} · ${mins} min read</small><br><br>` +
       (a.body || '<em>No content.</em>')
-    );
+    ); // addMsg sanitizes the combined html (including the Zendesk-article-derived a.body)
   } catch (e) {
     removeTyping();
     addMsg('agent', `<p>Error: ${escHtml(e.message)}</p>`, 'error');
