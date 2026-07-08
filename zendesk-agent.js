@@ -768,15 +768,14 @@ app.post("/slack/events", verifySlackSignature, async (req, res) => {
         return;
       }
 
-      const history = getChannelHistory(event.channel);
+      const history = await getChannelHistory(event.channel);
       const zdHeaders = { Accept: "application/json", Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
 
       const answer = await runZendeskAgent(question, history, zdHeaders);
 
-      // Keep history as plain user/assistant pairs
-      history.push({ role: "user", content: question });
-      history.push({ role: "assistant", content: answer });
-      if (history.length > 20) history.splice(0, history.length - 20);
+      // Keep history as plain user/assistant pairs, capped before persisting
+      const updatedHistory = [...history, { role: "user", content: question }, { role: "assistant", content: answer }];
+      await saveChannelHistory(event.channel, updatedHistory);
 
       await postMessage(answer);
     } catch (e) {
