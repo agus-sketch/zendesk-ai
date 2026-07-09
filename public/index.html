@@ -1855,6 +1855,9 @@ restoreSession();
 fetch('/config').then(r => r.json()).then(cfg => {
   window._zdSubdomain = cfg.subdomain;
 }).catch(() => {});
+// Auto-reconnect with saved creds, mirroring minisana's connect-on-load —
+// skips the manual "Connect" click on every reload once creds are stored.
+if (zdEmail && zdToken && (activeLLMKey() || provider === 'ollama')) connect();
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
