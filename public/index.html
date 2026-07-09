@@ -810,7 +810,9 @@ async function loadZendeskData() {
   while (artUrl) {
     const artRes = await zdFetch('GET', artUrl);
     allArticles.push(...(artRes.articles || []));
-    artUrl = artRes.next_page || null;
+    // Zendesk returns next_page as an absolute URL; the /zendesk proxy only
+    // accepts relative paths, so strip it down to path+query before reuse.
+    artUrl = artRes.next_page ? artRes.next_page.replace(/^https?:\/\/[^/]+\/api\/v2/, '') : null;
   }
   cachedArticles = allArticles.map(enrichArticle);
   if (panelOpen) renderPanel();
