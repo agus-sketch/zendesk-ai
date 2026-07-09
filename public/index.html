@@ -769,13 +769,13 @@ async function connect() {
     addMsg('agent',
       `Connected to <strong>${cfg.subdomain}.zendesk.com</strong> as <strong>${zdEmail}</strong>. Loaded ${cachedArticles.length} article${cachedArticles.length !== 1 ? 's' : ''} across ${cachedSections.length} section${cachedSections.length !== 1 ? 's' : ''}.`
       + '<div class="chips">'
-      + '<span class="chip" onclick="quickSend(\'Show me all articles\',this)">List articles</span>'
-      + '<span class="chip" onclick="quickSend(\'Health check — what needs attention?\',this)">Health check</span>'
-      + '<span class="chip" onclick="quickSend(\'What content gaps exist in our Help Center?\',this)">Content gaps</span>'
-      + '<span class="chip" onclick="quickSend(\'Show me all draft articles\',this)">Show drafts</span>'
-      + '<span class="chip" onclick="quickSend(\'Find articles not updated in the last 6 months\',this)">Find outdated</span>'
-      + '<span class="chip" onclick="quickSend(\'List articles grouped by section\',this)">By section</span>'
-      + '<span class="chip" onclick="quickSend(\'Which articles have low vote scores or need improvement?\',this)">Low performing</span>'
+      + '<span class="chip" data-query="Show me all articles">List articles</span>'
+      + '<span class="chip" data-query="Health check — what needs attention?">Health check</span>'
+      + '<span class="chip" data-query="What content gaps exist in our Help Center?">Content gaps</span>'
+      + '<span class="chip" data-query="Show me all draft articles">Show drafts</span>'
+      + '<span class="chip" data-query="Find articles not updated in the last 6 months">Find outdated</span>'
+      + '<span class="chip" data-query="List articles grouped by section">By section</span>'
+      + '<span class="chip" data-query="Which articles have low vote scores or need improvement?">Low performing</span>'
       + '</div>', 'success');
   } catch (e) {
     addMsg('agent', `Connection error: ${e.message}`, 'error');
@@ -1175,6 +1175,13 @@ function quickSend(text, btn) {
   $('userInput').value = text;
   send();
 }
+
+// Chips inside addMsg-rendered content go through DOMPurify, which strips
+// inline onclick handlers — use a data attribute + delegated listener instead.
+$('messages').addEventListener('click', e => {
+  const chip = e.target.closest('.chip[data-query]');
+  if (chip) quickSend(chip.dataset.query, chip);
+});
 
 async function send() {
   const input = $('userInput');
