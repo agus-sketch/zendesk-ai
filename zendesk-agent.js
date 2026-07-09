@@ -7,8 +7,22 @@ import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { config } from "dotenv";
 import { waitUntil } from "@vercel/functions";
+import { callLLM, LLM_MODELS } from "./lib/llmClients.js";
 
 config();
+
+// ── Manual Slack app configuration (api.slack.com/apps) ──────────────────────
+// These endpoints exist in this file but Slack won't call them until you wire
+// them up in the Slack app's admin config:
+//   1. Slash Commands → Create New Command
+//        Command:      /zendesk
+//        Request URL:  <deployed-base-url>/slack/commands
+//   2. Interactivity & Shortcuts → toggle on
+//        Request URL:  <deployed-base-url>/slack/interactions
+// Both routes reuse SLACK_SIGNING_SECRET (already required for /slack/events)
+// to verify Slack's request signature — no additional secret is needed.
+// Remember to reinstall/save the app after adding these so the new scopes and
+// Request URLs actually take effect.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +30,20 @@ const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN || "";
 const ZENDESK_BASE      = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 const SERVER_ZD_EMAIL   = process.env.ZENDESK_EMAIL  || "";
 const SERVER_ZD_TOKEN   = process.env.ZENDESK_TOKEN  || "";
+
+// ── Stale-article digest cron (see GET /cron/stale-articles below) ──────────
+// CRON_SECRET:          required. Vercel's cron-auth pattern — the route only
+//                        runs when `Authorization: Bearer <CRON_SECRET>` is
+//                        present, so unset it and the route fails closed (500).
+// SLACK_NOTIFY_CHANNEL:  required to actually post. Slack channel id (e.g.
+//                        C0123456789) the weekly digest is posted to. If
+//                        unset, the route still runs but logs a warning and
+//                        skips posting instead of throwing.
+// STALE_ARTICLE_DAYS:    optional, default 180. Articles whose `updated_at`
+//                        is older than this many days are flagged as stale.
+const CRON_SECRET          = process.env.CRON_SECRET || "";
+const SLACK_NOTIFY_CHANNEL = process.env.SLACK_NOTIFY_CHANNEL || "";
+const STALE_ARTICLE_DAYS   = parseInt(process.env.STALE_ARTICLE_DAYS, 10) || 180;
 
 // Server-side LLM for the public reader (no key required from users)
 const SERVER_GROQ_KEY      = process.env.GROQ_API_KEY      || "";
@@ -98,14 +126,21 @@ async function installedOllamaModels() {
   } catch { return []; }
 }
 
+// Stash the raw body bytes so /slack/events, /slack/commands, and
+// /slack/interactions can verify Slack's HMAC signature, which is computed
+// over the exact raw request body. Slack sends JSON for the Events API but
+// application/x-www-form-urlencoded for slash commands and interactivity
+// payloads, so this same function is wired into both body parsers below —
+// whichever one actually matches the request's Content-Type is the one that
+// runs it and populates req.rawBody.
+function captureRawBody(req, res, buf) {
+  req.rawBody = buf;
+}
+
 const app = express();
 app.use(cors());
-app.use(express.json({
-  limit: "4mb",
-  // Stash the raw body bytes so /slack/events can verify Slack's HMAC signature,
-  // which is computed over the exact raw request body.
-  verify: (req, res, buf) => { req.rawBody = buf; },
-}));
+app.use(express.json({ limit: "4mb", verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 app.use(express.static(path.join(__dirname, "public")));
 
 // ── Slack request signature verification ─────────────────────────────────────
@@ -135,19 +170,6 @@ function verifySlackSignature(req, res, next) {
   }
   next();
 }
-
-const LLM_URLS = {
-  groq:      "https://api.groq.com/openai/v1/chat/completions",
-  openai:    "https://api.openai.com/v1/chat/completions",
-  ollama:    "http://localhost:11434/v1/chat/completions",
-  anthropic: "https://api.anthropic.com/v1/messages",
-};
-const LLM_MODELS = {
-  groq:      "llama-3.3-70b-versatile",
-  openai:    "gpt-4o-mini",
-  ollama:    "qwen2.5:14b",
-  anthropic: "claude-haiku-4-5-20251001",
-};
 
 // ── Reader UI ─────────────────────────────────────────────────────────────────
 app.get("/reader", (req, res) => {
@@ -191,35 +213,142 @@ app.post("/zd-public", async (req, res) => {
   }
 });
 
-// ── Server-side LLM helper ────────────────────────────────────────────────────
-async function serverLLM(messages, provider = SERVER_LLM_PROVIDER, key = SERVER_LLM_KEY, json = true) {
-  if (provider === "anthropic") {
-    const sys  = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
-    const conv = messages.filter(m => m.role !== "system");
-    const apiMessages = json ? [...conv, { role: "assistant", content: "{" }] : conv;
-    const r = await fetch(LLM_URLS.anthropic, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: LLM_MODELS.anthropic, messages: apiMessages, max_tokens: 1024, temperature: 0.2, ...(sys ? { system: sys } : {}) }),
-    });
+// ── Stale Help Center article digest ─────────────────────────────────────────
+// Lists articles oldest-updated-first and stops as soon as it hits one that's
+// no longer stale (or after STALE_SCAN_MAX_PAGES pages) — since the API sort
+// is ascending on updated_at, every article after that point is fresher still,
+// so there's no need to scan the entire Help Center on every run.
+const STALE_SCAN_MAX_PAGES  = 5;
+const STALE_SCAN_PER_PAGE   = 100;
+const STALE_DIGEST_MAX_ITEMS = 20;
+
+async function findStaleArticles(staleDays, maxPages = STALE_SCAN_MAX_PAGES, perPage = STALE_SCAN_PER_PAGE) {
+  const cutoffMs = Date.now() - staleDays * 24 * 60 * 60 * 1000;
+  const zdHeaders = { Accept: "application/json" };
+  if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) zdHeaders.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
+
+  let url = `${ZENDESK_BASE}/help_center/articles.json?sort_by=updated_at&sort_order=asc&per_page=${perPage}`;
+  let checked = 0;
+  const stale = [];
+
+  for (let page = 0; page < maxPages && url; page++) {
+    const r = await fetch(url, { headers: zdHeaders });
+    if (!r.ok) {
+      const text = await r.text().catch(() => "");
+      throw new Error(`Zendesk articles fetch failed (${r.status}): ${text.slice(0, 300)}`);
+    }
     const d = await r.json();
-    if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
-    const text = (d.content || []).map(b => b.text || "").join("");
-    return json ? "{" + text : text;
+    const articles = d.articles || [];
+
+    let hitFresh = false;
+    for (const a of articles) {
+      checked++;
+      // Skip drafts/archived articles when Zendesk exposes those flags on
+      // this instance (confirmed `draft` exists; `archived` may not — handle
+      // its absence gracefully rather than assuming the field is there).
+      if (a.draft || a.archived) continue;
+
+      const updatedMs = new Date(a.updated_at).getTime();
+      if (!Number.isFinite(updatedMs) || updatedMs >= cutoffMs) {
+        hitFresh = true;
+        break;
+      }
+      stale.push({
+        id: a.id,
+        title: a.title || `Article ${a.id}`,
+        updatedAt: a.updated_at,
+        url: a.html_url || `https://${ZENDESK_SUBDOMAIN}.zendesk.com/hc/en-us/articles/${a.id}`,
+      });
+    }
+    if (hitFresh) break;
+    url = d.next_page || null;
   }
 
-  const r = await fetch(LLM_URLS[provider] || LLM_URLS.groq, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: LLM_MODELS[provider] || LLM_MODELS.groq,
-      messages, temperature: 0.2, max_tokens: 1024,
-      response_format: { type: "json_object" },
-    }),
+  return { stale, checked };
+}
+
+function daysSince(isoString) {
+  const ms = Date.now() - new Date(isoString).getTime();
+  return Math.max(0, Math.floor(ms / (24 * 60 * 60 * 1000)));
+}
+
+function formatAge(days) {
+  if (days >= 365) { const y = Math.floor(days / 365); return `${y} year${y === 1 ? "" : "s"} ago`; }
+  if (days >= 30)  { const m = Math.floor(days / 30);  return `${m} month${m === 1 ? "" : "s"} ago`; }
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function buildStaleDigestText(stale, staleDays, maxItems = STALE_DIGEST_MAX_ITEMS) {
+  const shown = stale.slice(0, maxItems);
+  const remaining = stale.length - shown.length;
+  const lines = shown.map(a => `• <${a.url}|${a.title}> — last updated ${formatAge(daysSince(a.updatedAt))}`);
+  let text = `*📋 Stale Help Center articles* (not updated in ${staleDays}+ days, ${stale.length} found)\n\n${lines.join("\n")}`;
+  if (remaining > 0) text += `\n\n_...and ${remaining} more not shown._`;
+  return text;
+}
+
+// ── Cron: weekly stale-article digest ────────────────────────────────────────
+// Wired up in vercel.json's `crons` array. Vercel signs cron requests with a
+// Bearer token matching CRON_SECRET — see
+// https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs
+app.get("/cron/stale-articles", async (req, res) => {
+  if (!CRON_SECRET) {
+    console.error("CRON_SECRET not configured — refusing to run /cron/stale-articles");
+    return res.status(500).json({ error: "CRON_SECRET not configured on the server." });
+  }
+  if (req.headers.authorization !== `Bearer ${CRON_SECRET}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  if (!ZENDESK_SUBDOMAIN) {
+    return res.status(503).json({ error: "ZENDESK_SUBDOMAIN not configured." });
+  }
+
+  try {
+    const { stale, checked } = await findStaleArticles(STALE_ARTICLE_DAYS);
+
+    if (!stale.length) {
+      return res.json({ checked, stale: 0, posted: false });
+    }
+
+    if (!SLACK_NOTIFY_CHANNEL) {
+      console.warn("SLACK_NOTIFY_CHANNEL not configured — skipping stale-article Slack digest");
+      return res.json({ checked, stale: stale.length, posted: false, warning: "SLACK_NOTIFY_CHANNEL not configured." });
+    }
+    const slackToken = process.env.SLACK_BOT_TOKEN;
+    if (!slackToken) {
+      console.warn("SLACK_BOT_TOKEN not configured — skipping stale-article Slack digest");
+      return res.json({ checked, stale: stale.length, posted: false, warning: "SLACK_BOT_TOKEN not configured." });
+    }
+
+    const text = buildStaleDigestText(stale, STALE_ARTICLE_DAYS);
+    const r = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${slackToken}` },
+      body: JSON.stringify({ channel: SLACK_NOTIFY_CHANNEL, text }),
+    });
+    const d = await r.json();
+    if (!d.ok) console.error("Slack postMessage error (stale-articles digest):", d.error);
+
+    res.json({ checked, stale: stale.length, posted: !!d.ok });
+  } catch (e) {
+    console.error("/cron/stale-articles error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Server-side LLM helper ────────────────────────────────────────────────────
+async function serverLLM(messages, provider = SERVER_LLM_PROVIDER, key = SERVER_LLM_KEY, json = true) {
+  const result = await callLLM({
+    provider,
+    model: LLM_MODELS[provider] || LLM_MODELS.groq,
+    messages,
+    apiKey: key,
+    temperature: 0.2,
+    maxTokens: 1024,
+    jsonMode: json,
   });
-  const d = await r.json();
-  if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
-  return d.choices?.[0]?.message?.content || "{}";
+  if (result.raw?.error) throw new Error(result.raw.error.message || JSON.stringify(result.raw.error));
+  return result.text || (json ? "{}" : "");
 }
 
 // ── Public AI reader chat ─────────────────────────────────────────────────────
@@ -298,6 +427,72 @@ app.get("/ollama-models", async (req, res) => {
   }
 });
 
+// ── Admin web UI session persistence ─────────────────────────────────────────
+// Chat/UI state only (chat history, last-viewed article, last search query) —
+// deliberately separate from the `zendesk:<slackUserId>` OAuth token storage
+// above, which holds actual Zendesk credentials. Keyed by an opaque id the
+// client generates once and keeps in localStorage (`zendesk_session_id`), not
+// by any Slack/Zendesk identity.
+const SESSION_HISTORY_LIMIT = 30;
+
+// Truncate any array-shaped chat/message history in the session payload
+// before persisting, so a long-running admin session can't grow the KV value
+// unbounded.
+function capSessionData(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const capped = { ...data };
+  for (const key of ["chatHistory", "messages", "history"]) {
+    if (Array.isArray(capped[key]) && capped[key].length > SESSION_HISTORY_LIMIT) {
+      capped[key] = capped[key].slice(-SESSION_HISTORY_LIMIT);
+    }
+  }
+  return capped;
+}
+
+app.post("/session", async (req, res) => {
+  const { id: bodyId, data } = req.body || {};
+  if (data === undefined) return res.status(400).json({ error: "Missing data" });
+  const id = bodyId || crypto.randomUUID();
+  try {
+    await kvSet(`web_session:${id}`, JSON.stringify(capSessionData(data)));
+    res.json({ id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/session/:id", async (req, res) => {
+  try {
+    const raw = await kvGet(`web_session:${req.params.id}`);
+    if (!raw) return res.status(404).json({ error: "Not found" });
+    let data;
+    try { data = JSON.parse(raw); } catch { data = raw; }
+    res.json({ data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Bulk Help Center article flagging ────────────────────────────────────────
+// Minimal, deliberately dumb persisted marker for the admin UI's "Flag as
+// stale" bulk action — just records article ids in KV. No workflow (no
+// notifications, no automatic un-flagging) is built on top of this yet.
+app.post("/articles/flag", async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: "Missing ids" });
+  try {
+    const raw = await kvGet("flagged_articles");
+    let existing;
+    try { existing = raw ? JSON.parse(raw) : []; } catch { existing = []; }
+    if (!Array.isArray(existing)) existing = [];
+    const merged = Array.from(new Set([...existing, ...ids.map(Number)].filter(Number.isFinite)));
+    await kvSet("flagged_articles", JSON.stringify(merged));
+    res.json({ ok: true, flagged: merged });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Zendesk proxy ──────────────────────────────────────────────────────────────
 app.post("/zendesk", async (req, res) => {
   const { method, endpoint, body, email, token } = req.body;
@@ -337,98 +532,56 @@ app.post("/llm", async (req, res) => {
   const llmKey = req.body.llmKey || (provider === "anthropic" ? SERVER_ANTHROPIC_KEY : provider === "openai" ? SERVER_OPENAI_KEY : provider === "groq" ? SERVER_GROQ_KEY : "");
   if (!llmKey && provider !== "ollama") return res.status(400).json({ error: "Missing LLM API key" });
 
-  const url   = LLM_URLS[provider]  || LLM_URLS.groq;
-  const model = req.body.model      || LLM_MODELS[provider] || LLM_MODELS.groq;
+  const model = req.body.model || LLM_MODELS[provider] || LLM_MODELS.groq;
   const msgs  = messages || [{ role: "user", content: prompt }];
   const wantsStream = !!req.body.stream;
 
-  if (provider === "anthropic") return handleAnthropic({ res, llmKey, url, model, msgs, wantsStream });
+  if (provider === "anthropic") return handleAnthropic({ res, llmKey, model, msgs });
 
-  const headers = { "Content-Type": "application/json" };
-  if (llmKey) headers.Authorization = `Bearer ${llmKey}`;
-
-  const ctrl  = new AbortController();
   const timeout = provider === "ollama" ? 180000 : 30000;
-  const timer = setTimeout(() => ctrl.abort(), timeout);
 
   if (wantsStream) {
-    const payload = {
-      model,
-      messages: msgs,
-      temperature: 0.2,
-      max_tokens: 2048,
-      stream: true,
-    };
-    if (provider === "ollama") payload.keep_alive = "30m";
-
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
     try {
-      const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: ctrl.signal });
-      clearTimeout(timer);
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      if (!r.ok) { res.end(`data: ${JSON.stringify({ error: `LLM error ${r.status}` })}\n\n`); return; }
-      const reader = r.body.getReader();
-      const dec = new TextDecoder();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { res.end(); return; }
-          res.write(dec.decode(value, { stream: true }));
-        }
-      } catch { res.end(); }
-      return;
+      const result = await callLLM({
+        provider, model, messages: msgs, apiKey: llmKey,
+        temperature: 0.2, maxTokens: 2048, stream: true,
+        keepAlive: provider === "ollama", timeoutMs: timeout,
+        onPartial: chunk => res.write(chunk),
+      });
+      if (!result.ok) { res.end(`data: ${JSON.stringify({ error: `LLM error ${result.status}` })}\n\n`); return; }
+      res.end();
     } catch (e) {
-      clearTimeout(timer);
       const msg = e.name === "AbortError" ? "LLM timed out — try again" : e.message;
       if (!res.headersSent) res.status(500).json({ error: msg });
-      return;
     }
+    return;
   }
 
-  const payload = {
-    model,
-    messages: msgs,
-    temperature: 0.2,
-    max_tokens: 2048,
-    response_format: { type: "json_object" },
-  };
-  if (provider === "ollama") payload.keep_alive = "30m";
-
   try {
-    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: ctrl.signal });
-    clearTimeout(timer);
-    res.json(await r.json());
+    const result = await callLLM({
+      provider, model, messages: msgs, apiKey: llmKey,
+      temperature: 0.2, maxTokens: 2048, jsonMode: true,
+      keepAlive: provider === "ollama", timeoutMs: timeout,
+    });
+    res.json(result.raw);
   } catch (e) {
-    clearTimeout(timer);
     const msg = e.name === "AbortError" ? "LLM timed out — try again" : e.message;
     if (!res.headersSent) res.status(500).json({ error: msg });
   }
 });
 
-async function handleAnthropic({ res, llmKey, url, model, msgs, wantsStream }) {
-  const sys  = msgs.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n\n");
-  const conv = msgs.filter(m => m.role !== "system");
-  const convWithPrefill = [...conv, { role: "assistant", content: "{" }];
-  const payload = { model, messages: convWithPrefill, temperature: 0.2, max_tokens: 2048 };
-  if (sys) payload.system = sys;
-
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 60000);
+async function handleAnthropic({ res, llmKey, model, msgs }) {
   try {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": llmKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify(payload),
-      signal: ctrl.signal,
+    const result = await callLLM({
+      provider: "anthropic", model, messages: msgs, apiKey: llmKey,
+      temperature: 0.2, maxTokens: 2048, jsonMode: true, timeoutMs: 60000,
     });
-    if (!r.ok) { clearTimeout(timer); return res.status(r.status).json({ error: `Anthropic: ${await r.text()}` }); }
-    clearTimeout(timer);
-    const data = await r.json();
-    const text = "{" + (data.content || []).map(b => b.text || "").join("");
-    res.json({ choices: [{ message: { role: "assistant", content: text } }] });
+    if (!result.ok) return res.status(result.status).json({ error: `Anthropic: ${result.rawText}` });
+    res.json({ choices: [{ message: { role: "assistant", content: result.text } }] });
   } catch (e) {
-    clearTimeout(timer);
     const msg = e.name === "AbortError" ? "LLM timed out — try again" : e.message;
     if (!res.headersSent) res.status(500).json({ error: msg });
   }
@@ -672,40 +825,114 @@ async function runZendeskTool(name, input, zdHeaders) {
   }
 }
 
+// Returns { text, articles }. `articles` collects any concrete Help Center
+// articles (id/title/url) surfaced by search_articles or get_article tool
+// calls during the loop, so callers (Slack routes) can attach "open article" /
+// "suggest improvement" buttons only when there's something concrete to link.
+function collectArticlesFromToolOutput(toolName, output, into) {
+  if (toolName !== "search_articles" && toolName !== "get_article") return;
+  const candidates = Array.isArray(output) ? output : [output];
+  for (const a of candidates) {
+    if (a && a.id != null && a.url && !a.error) into.set(a.id, { id: a.id, title: a.title || `Article ${a.id}`, url: a.url });
+  }
+}
+
 async function runZendeskAgent(userMessage, history, zdHeaders) {
   const messages = [...history, { role: "user", content: userMessage }];
   const system = "You are a helpful BankingBridge Zendesk Help Center agent. You can search, read, create, and edit Help Center articles and sections using the available tools. For questions, search for relevant articles first and answer from their content. For write operations (edit/create), use the appropriate tools and confirm what you did. Be concise. Use Slack formatting: *bold* not **bold**, _italic_, bullet points with •. No HTML in your final text replies.";
 
   let loopMessages = [...messages];
+  const foundArticles = new Map();
 
   for (let i = 0; i < 10; i++) {
-    const r = await fetch(LLM_URLS.anthropic, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": SERVER_ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: LLM_MODELS.anthropic, system, messages: loopMessages, tools: ZENDESK_TOOLS, max_tokens: 2048, temperature: 0.2 }),
+    const result = await callLLM({
+      provider: "anthropic",
+      model: LLM_MODELS.anthropic,
+      system,
+      messages: loopMessages,
+      tools: ZENDESK_TOOLS,
+      maxTokens: 2048,
+      temperature: 0.2,
+      apiKey: SERVER_ANTHROPIC_KEY,
     });
-    const d = await r.json();
+    const d = result.raw || {};
     if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
 
     if (d.stop_reason === "end_turn") {
-      return (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+      const text = (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+      return { text, articles: [...foundArticles.values()] };
     }
 
     if (d.stop_reason === "tool_use") {
       loopMessages.push({ role: "assistant", content: d.content });
       const toolResults = await Promise.all(
-        (d.content || []).filter(b => b.type === "tool_use").map(async tool => ({
-          type: "tool_result",
-          tool_use_id: tool.id,
-          content: JSON.stringify(await runZendeskTool(tool.name, tool.input, zdHeaders)),
-        }))
+        (d.content || []).filter(b => b.type === "tool_use").map(async tool => {
+          const output = await runZendeskTool(tool.name, tool.input, zdHeaders);
+          collectArticlesFromToolOutput(tool.name, output, foundArticles);
+          return { type: "tool_result", tool_use_id: tool.id, content: JSON.stringify(output) };
+        })
       );
       loopMessages.push({ role: "user", content: toolResults });
     } else {
-      return (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+      const text = (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+      return { text, articles: [...foundArticles.values()] };
     }
   }
-  return "I wasn't able to complete that. Please try again.";
+  return { text: "I wasn't able to complete that. Please try again.", articles: [...foundArticles.values()] };
+}
+
+// ── Slack Block Kit helpers ───────────────────────────────────────────────────
+// Encodes which article a "Suggest improvement" button refers to directly in
+// the button's `value` — no server-side state needed to resolve the click.
+function encodeSuggestImprovementValue(articleId) {
+  return JSON.stringify({ action: "suggest_improvement", articleId });
+}
+
+// Only attach buttons when we have concrete articles with known ids/urls —
+// plain conversational replies (or write confirmations with no articles
+// looked up) get no blocks and just render as normal text.
+function buildArticleBlocks(articles) {
+  if (!Array.isArray(articles) || !articles.length) return null;
+  const blocks = [];
+  for (const a of articles.slice(0, 5)) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `*<${a.url}|${a.title}>*` },
+    });
+    blocks.push({
+      type: "actions",
+      block_id: `article_actions_${a.id}`,
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "🔗 Open in Help Center", emoji: true },
+          url: a.url,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "✨ Suggest improvement", emoji: true },
+          action_id: "suggest_improvement",
+          value: encodeSuggestImprovementValue(a.id),
+        },
+      ],
+    });
+  }
+  return blocks;
+}
+
+async function postToResponseUrl(responseUrl, payload) {
+  try {
+    const r = await fetch(responseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) console.error("response_url post failed:", r.status, await r.text().catch(() => ""));
+    return r;
+  } catch (e) {
+    console.error("response_url post error:", e.message);
+    return null;
+  }
 }
 
 // ── Per-channel conversation history ─────────────────────────────────────────
@@ -745,11 +972,14 @@ app.post("/slack/events", verifySlackSignature, async (req, res) => {
   const slackToken = process.env.SLACK_BOT_TOKEN;
   if (!slackToken) return;
 
-  const postMessage = async (text) => {
+  const postMessage = async (text, articles = []) => {
+    const body = { channel: event.channel, text };
+    const blocks = buildArticleBlocks(articles);
+    if (blocks) body.blocks = blocks;
     const r = await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${slackToken}` },
-      body: JSON.stringify({ channel: event.channel, text }),
+      body: JSON.stringify(body),
     });
     const d = await r.json();
     if (!d.ok) console.error("Slack postMessage error:", d.error, "channel:", event.channel);
@@ -771,16 +1001,154 @@ app.post("/slack/events", verifySlackSignature, async (req, res) => {
       const history = await getChannelHistory(event.channel);
       const zdHeaders = { Accept: "application/json", Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
 
-      const answer = await runZendeskAgent(question, history, zdHeaders);
+      const { text: answer, articles } = await runZendeskAgent(question, history, zdHeaders);
 
       // Keep history as plain user/assistant pairs, capped before persisting
       const updatedHistory = [...history, { role: "user", content: question }, { role: "assistant", content: answer }];
       await saveChannelHistory(event.channel, updatedHistory);
 
-      await postMessage(answer);
+      await postMessage(answer, articles);
     } catch (e) {
       console.error("Slack handler error:", e.message);
       await postMessage("Something went wrong. Please try again.").catch(() => {});
+    }
+  })());
+});
+
+// ── Slack slash command: /zendesk ────────────────────────────────────────────
+// Requires the "Slash Commands" feature configured in the Slack app (see the
+// config comment near the top of this file). Slack requires an ack within 3
+// seconds, so we respond immediately and do the real work in the background,
+// delivering the final answer via response_url.
+app.post("/slack/commands", verifySlackSignature, async (req, res) => {
+  const { text, user_id: slackUserId, channel_id: channelId, response_url: responseUrl } = req.body;
+
+  res.status(200).json({ response_type: "ephemeral", text: "Searching…" });
+
+  if (!responseUrl) return; // nothing we can do without it
+
+  waitUntil((async () => {
+    try {
+      const query = (text || "").trim() || "list recently updated articles";
+
+      // Prefer the invoking user's own OAuth token (matches /slack/events'
+      // write-capable flow); fall back to server-side read-only creds so
+      // read-only searches still work for users who haven't connected yet.
+      let zdHeaders;
+      const accessToken = await getZendeskTokenForUser(slackUserId);
+      if (accessToken) {
+        zdHeaders = { Accept: "application/json", Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
+      } else if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) {
+        zdHeaders = { Accept: "application/json", Authorization: zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN), "Content-Type": "application/json" };
+      } else {
+        const connectUrl = `https://zendesk-ai.vercel.app/auth/zendesk?slack_user_id=${slackUserId}`;
+        await postToResponseUrl(responseUrl, {
+          response_type: "ephemeral",
+          text: `Hi! I need to connect to your Zendesk account first.\n\n<${connectUrl}|Click here to connect Zendesk> — it takes about 10 seconds.`,
+        });
+        return;
+      }
+
+      const history = await getChannelHistory(channelId);
+      const { text: answer, articles } = await runZendeskAgent(query, history, zdHeaders);
+
+      const updatedHistory = [...history, { role: "user", content: query }, { role: "assistant", content: answer }];
+      await saveChannelHistory(channelId, updatedHistory);
+
+      const payload = { response_type: "in_channel", text: answer };
+      const blocks = buildArticleBlocks(articles);
+      if (blocks) payload.blocks = blocks;
+      await postToResponseUrl(responseUrl, payload);
+    } catch (e) {
+      console.error("/slack/commands handler error:", e.message);
+      await postToResponseUrl(responseUrl, { response_type: "ephemeral", text: "Something went wrong. Please try again." }).catch(() => {});
+    }
+  })());
+});
+
+// ── Slack interactivity: button clicks ───────────────────────────────────────
+// Requires "Interactivity & Shortcuts" enabled in the Slack app (see the
+// config comment near the top of this file). Slack sends these as
+// application/x-www-form-urlencoded with a single `payload` field holding a
+// JSON string. Ack within 3 seconds, then do the real work in the background.
+app.post("/slack/interactions", verifySlackSignature, async (req, res) => {
+  res.status(200).send();
+
+  let payload;
+  try {
+    payload = JSON.parse(req.body?.payload || "");
+  } catch (e) {
+    console.error("Failed to parse /slack/interactions payload:", e.message);
+    return;
+  }
+
+  if (payload.type !== "block_actions") return;
+
+  const action = (payload.actions || [])[0];
+  const responseUrl = payload.response_url;
+  if (!action || !responseUrl) return;
+
+  // Only the "Suggest improvement" button carries a value we act on here —
+  // the "Open in Help Center" button is a plain `url` button Slack handles
+  // client-side, so no block_actions event is even sent for it.
+  if (action.action_id !== "suggest_improvement" || !action.value) return;
+
+  let decoded;
+  try { decoded = JSON.parse(action.value); } catch { decoded = null; }
+  const articleId = decoded?.action === "suggest_improvement" ? Number(decoded.articleId) : null;
+  if (!articleId) {
+    await postToResponseUrl(responseUrl, { replace_original: false, text: "Couldn't figure out which article this button refers to." });
+    return;
+  }
+
+  waitUntil((async () => {
+    try {
+      if (!ZENDESK_SUBDOMAIN) {
+        await postToResponseUrl(responseUrl, { replace_original: false, text: "ZENDESK_SUBDOMAIN isn't configured on the server." });
+        return;
+      }
+      if (!SERVER_ANTHROPIC_KEY) {
+        await postToResponseUrl(responseUrl, { replace_original: false, text: "No Anthropic API key configured on the server, so I can't generate suggestions." });
+        return;
+      }
+
+      // Reuse the server-level read path (same creds as the public reader /
+      // /zd-public) — improvement suggestions only need to read the article,
+      // not the clicking user's own write-scoped OAuth token.
+      const zdHeaders = { Accept: "application/json", "Content-Type": "application/json" };
+      if (SERVER_ZD_EMAIL && SERVER_ZD_TOKEN) zdHeaders.Authorization = zendeskAuth(SERVER_ZD_EMAIL, SERVER_ZD_TOKEN);
+
+      const article = await runZendeskTool("get_article", { article_id: articleId }, zdHeaders);
+      if (!article || article.error || !article.body) {
+        await postToResponseUrl(responseUrl, {
+          replace_original: false,
+          text: `Couldn't fetch article ${articleId}: ${article?.error || "not found"}`,
+        });
+        return;
+      }
+
+      const plainBody = article.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 6000);
+      const result = await callLLM({
+        provider: "anthropic",
+        model: LLM_MODELS.anthropic,
+        system: "You are a helpful BankingBridge Zendesk Help Center editor. Review the given Help Center article and suggest concrete improvements: clarity issues, missing or unclear steps, outdated information, and anything a reader might find confusing. Be specific and actionable — reference the relevant part of the article for each suggestion. Use Slack formatting: *bold* not **bold**, _italic_, bullet points with •. No HTML in your reply. Keep it concise.",
+        messages: [{ role: "user", content: `Article title: ${article.title}\n\nArticle content:\n${plainBody}` }],
+        maxTokens: 1024,
+        temperature: 0.3,
+        apiKey: SERVER_ANTHROPIC_KEY,
+      });
+      const d = result.raw || {};
+      if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+      const suggestions = (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim()
+        || "I couldn't come up with suggestions for this article.";
+
+      await postToResponseUrl(responseUrl, {
+        replace_original: false,
+        text: `*✨ Suggestions for <${article.url}|${article.title}>*\n\n${suggestions}`,
+      });
+    } catch (e) {
+      console.error("suggest_improvement handler error:", e.message);
+      await postToResponseUrl(responseUrl, { replace_original: false, text: "Something went wrong while generating suggestions. Please try again." }).catch(() => {});
     }
   })());
 });

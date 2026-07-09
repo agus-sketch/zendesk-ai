@@ -272,6 +272,9 @@
       <button id="panelBtn" class="hdr-btn" onclick="togglePanel()" title="Articles panel" disabled>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
       </button>
+      <button id="bulkBtn" class="hdr-btn" onclick="toggleBulkView()" title="Bulk actions" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/><path d="M7 6h.01M7 12h.01M7 18h.01"/></svg>
+      </button>
       <button id="settingsBtn" class="hdr-btn open" onclick="toggleConfig()" title="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
       </button>
@@ -386,6 +389,40 @@
   </div>
 </div>
 
+<div id="bulk-overlay" class="improve-overlay" style="display:none">
+  <div class="improve-overlay-inner" style="max-width:920px;max-height:85vh">
+    <div class="improve-overlay-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <div style="min-width:0">
+        <strong>Bulk actions</strong>
+        <span id="bulk-summary">Operates on the articles currently matching the panel's search/filter — select rows below.</span>
+      </div>
+      <button class="panel-icon-btn" onclick="closeBulkView()" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="improve-overlay-body" style="padding:0;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:10px 18px;border-bottom:1px solid var(--border-light);display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0">
+        <button class="overlay-action-btn" onclick="runBulkAction('review')">🔍 AI-review selected</button>
+        <button class="overlay-action-btn" onclick="runBulkAction('flag')">🏷️ Flag as stale</button>
+      </div>
+      <div style="flex:1;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+          <thead>
+            <tr style="position:sticky;top:0;background:var(--surface-2)">
+              <th style="width:34px;padding:8px;text-align:left"><input type="checkbox" id="bulkSelectAll" onchange="toggleSelectAllBulk(this.checked)" /></th>
+              <th style="text-align:left;padding:8px">Title</th>
+              <th style="text-align:left;padding:8px">Section</th>
+              <th style="text-align:left;padding:8px">Status</th>
+              <th style="text-align:left;padding:8px">Result</th>
+            </tr>
+          </thead>
+          <tbody id="bulkTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -430,6 +467,22 @@ const STORAGE_KEY = 'zai-keys';
 const ZD_CREDS_KEY = 'zai-zd-creds';
 const THEME_KEY   = 'zai-theme';
 const PROV_KEY    = 'zai-provider';
+
+// ── Web UI session persistence (chat/UI state only — NOT credentials) ───────
+// Separate from STORAGE_KEY/ZD_CREDS_KEY above, which hold LLM keys and
+// Zendesk creds. This just lets chat history / last-viewed article / last
+// search survive a page reload, via POST/GET /session on the server (backed
+// by the same KV store, but a different key namespace: web_session:<id>).
+const SESSION_ID_KEY = 'zendesk_session_id';
+let sessionId = localStorage.getItem(SESSION_ID_KEY) || null;
+let displayHistory = []; // what's actually rendered in #messages — {role, html, type}
+let _sessionSaveTimer = null;
+let _pendingRestore = null; // { articleId } captured from a restored session, applied once Zendesk data loads
+
+// ── Bulk actions (Help Center articles) ──────────────────────────────────────
+let bulkOpen = false;
+let bulkSelected = new Set();
+let bulkStatus = {}; // articleId -> { state: 'pending'|'running'|'done'|'error', message }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user search, read, explain, create, edit, move, duplicate, bulk-publish, and audit Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
@@ -548,6 +601,72 @@ function loadZdCreds() {
     $('zdToken').value = zdToken;
   } catch {}
 }
+
+// ── Session persistence (chat/UI state — debounced) ─────────────────────────
+function currentSessionState() {
+  return {
+    chatHistory: displayHistory.slice(-30),
+    lastArticleId: currentDetailId,
+    lastSearchQuery: panelSearch || '',
+  };
+}
+function scheduleSessionSave() {
+  clearTimeout(_sessionSaveTimer);
+  _sessionSaveTimer = setTimeout(saveSession, 2000);
+}
+async function saveSession() {
+  try {
+    const r = await fetch('/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, data: currentSessionState() }),
+    });
+    const d = await r.json();
+    if (d.id && d.id !== sessionId) {
+      sessionId = d.id;
+      localStorage.setItem(SESSION_ID_KEY, sessionId);
+    }
+  } catch (e) {
+    console.error('Session save failed:', e.message);
+  }
+}
+// Re-renders previously-saved chat bubbles into #messages (replacing the
+// default greeting) and rehydrates chatHistory so the LLM has continuity too.
+function renderStoredMessages(history) {
+  if (!Array.isArray(history) || !history.length) return;
+  $('messages').innerHTML = '';
+  history.forEach(m => {
+    addMsg(m.role, m.html, m.type || '', false);
+    if (m.role === 'user') chatHistory.push({ role: 'user', content: stripHtml(m.html) });
+    else if (m.role === 'agent') chatHistory.push({ role: 'assistant', content: stripHtml(m.html).slice(0, 300) });
+  });
+}
+async function restoreSession() {
+  if (!sessionId) return; // nothing to restore, and nothing saved yet either
+  try {
+    const r = await fetch('/session/' + encodeURIComponent(sessionId));
+    if (!r.ok) return; // includes 404 — expired/unknown session, start fresh
+    const d = await r.json();
+    const data = d.data || {};
+    renderStoredMessages(data.chatHistory);
+    if (data.lastSearchQuery) {
+      const el = $('panelSearch');
+      if (el) el.value = data.lastSearchQuery;
+    }
+    _pendingRestore = { articleId: data.lastArticleId || null, searchQuery: data.lastSearchQuery || '' };
+  } catch (e) {
+    console.error('Failed to restore session:', e.message);
+  }
+}
+// Applies a restored last-viewed-article / last-search once Zendesk data is
+// actually loaded (restoreSession() runs before the user has even connected).
+function applyPendingRestore() {
+  if (!_pendingRestore) return;
+  const { articleId, searchQuery } = _pendingRestore;
+  _pendingRestore = null;
+  if (searchQuery) onPanelSearch($('panelSearch') ? $('panelSearch').value : searchQuery);
+  if (articleId && cachedArticles.some(a => a.id === articleId)) openDetail(articleId);
+}
 function activeLLMKey() { return provider === 'openai' ? openaiKey : provider === 'anthropic' ? anthropicKey : provider === 'ollama' ? '' : groqKey; }
 function activeLLMModel() { return provider === 'ollama' ? ollamaModel : provider === 'anthropic' ? anthropicModel : undefined; }
 
@@ -642,6 +761,8 @@ async function connect() {
     $('status-pill').textContent = `● ${cfg.subdomain}`;
     $('status-pill').className = 'connected';
     $('panelBtn').disabled = false;
+    $('bulkBtn').disabled = false;
+    applyPendingRestore();
     toggleConfig();
     $('settingsBtn').classList.remove('open');
     if (provider === 'ollama') warmCurrentModel();
@@ -733,6 +854,149 @@ function downloadArticles() {
   a.click();
 }
 
+// ── Bulk actions ──────────────────────────────────────────────────────────────
+// Adapted from the "suggest improvement" review prompt used by the Slack
+// /slack/interactions handler (zendesk-agent.js, suggest_improvement action) —
+// same intent (review & suggest concrete improvements, don't rewrite the
+// article), reworded to return {"answer":"<HTML>"} since it goes through this
+// page's existing callLLM() helper, which always expects that JSON shape.
+const BULK_REVIEW_SYSTEM_PROMPT = 'You are ZAI, a Help Center editor. Review the given article and suggest concrete improvements: clarity issues, missing or unclear steps, outdated information, and anything a reader might find confusing. Be specific and actionable. Return ONLY a valid JSON object {"answer":"<HTML>"} — a short bullet list (<ul><li>) of suggestions, under 120 words. No markdown fences, no text outside the JSON.';
+
+// Same article source as the panel: cachedArticles filtered by whatever
+// panelFilter/panelSearch are currently set to (the admin UI's existing
+// listing/search mechanism) — the bulk view just operates on that.
+function bulkFilteredArticles() {
+  let articles = [...cachedArticles];
+  if (panelFilter === 'published') articles = articles.filter(a => !a.draft);
+  if (panelFilter === 'drafts')    articles = articles.filter(a => a.draft);
+  if (panelSearch) articles = articles.filter(a => a.title.toLowerCase().includes(panelSearch));
+  return articles;
+}
+
+function toggleBulkView() {
+  bulkOpen = !bulkOpen;
+  $('bulk-overlay').style.display = bulkOpen ? 'flex' : 'none';
+  if (bulkOpen) renderBulkTable();
+}
+function closeBulkView() {
+  bulkOpen = false;
+  $('bulk-overlay').style.display = 'none';
+}
+
+function renderBulkStatusCell(st) {
+  if (!st) return '';
+  if (st.state === 'pending') return `<span style="color:var(--text-3)">⏳ pending</span>`;
+  if (st.state === 'running') return `<span style="color:var(--blue)">⏳ running…</span>`;
+  if (st.state === 'done')    return `<span style="color:var(--green)" title="${escHtml(st.message || '')}">✓ done${st.message ? ' — ' + escHtml(st.message.slice(0, 70)) + (st.message.length > 70 ? '…' : '') : ''}</span>`;
+  if (st.state === 'error')   return `<span style="color:var(--err-text)">✗ ${escHtml(st.message || 'error')}</span>`;
+  return '';
+}
+
+function renderBulkTable() {
+  const articles = bulkFilteredArticles();
+  const tbody = $('bulkTableBody');
+  tbody.innerHTML = articles.length
+    ? articles.map(a => `
+      <tr>
+        <td style="padding:6px 8px;border-top:1px solid var(--border-light)"><input type="checkbox" class="bulk-row-check" ${bulkSelected.has(a.id) ? 'checked' : ''} onchange="toggleBulkRow(${a.id}, this.checked)" /></td>
+        <td style="padding:6px 8px;border-top:1px solid var(--border-light)">${escHtml(a.title)}</td>
+        <td style="padding:6px 8px;border-top:1px solid var(--border-light);color:var(--text-2)">${escHtml(a._section || '')}</td>
+        <td style="padding:6px 8px;border-top:1px solid var(--border-light)"><span class="article-badge ${a.draft ? 'badge-draft' : 'badge-published'}">${a.draft ? 'Draft' : 'Published'}</span></td>
+        <td style="padding:6px 8px;border-top:1px solid var(--border-light)" id="bulk-result-${a.id}">${renderBulkStatusCell(bulkStatus[a.id])}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-3)">No articles match the current search/filter. Adjust the article panel's search or filter first.</td></tr>`;
+  const selAll = $('bulkSelectAll');
+  if (selAll) selAll.checked = articles.length > 0 && articles.every(a => bulkSelected.has(a.id));
+  updateBulkSummaryCount();
+}
+
+function updateBulkSummaryCount() {
+  const el = $('bulk-summary');
+  if (bulkSelected.size) el.textContent = `${bulkSelected.size} article${bulkSelected.size !== 1 ? 's' : ''} selected.`;
+  else el.textContent = `Operates on the articles currently matching the panel's search/filter — select rows below.`;
+}
+
+function toggleBulkRow(id, checked) {
+  if (checked) bulkSelected.add(id); else bulkSelected.delete(id);
+  const selAll = $('bulkSelectAll');
+  if (selAll) selAll.checked = bulkFilteredArticles().every(a => bulkSelected.has(a.id));
+  updateBulkSummaryCount();
+}
+function toggleSelectAllBulk(checked) {
+  bulkFilteredArticles().forEach(a => { if (checked) bulkSelected.add(a.id); else bulkSelected.delete(a.id); });
+  renderBulkTable();
+}
+
+// Simple concurrency-limited loop (not unbounded Promise.all) — used for the
+// AI-review bulk action since each article involves an LLM call.
+async function runWithConcurrency(items, limit, worker) {
+  let idx = 0;
+  async function runNext() {
+    while (idx < items.length) {
+      const cur = idx++;
+      await worker(items[cur], cur);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, runNext);
+  await Promise.all(workers);
+}
+
+async function runBulkAction(kind) {
+  const ids = [...bulkSelected];
+  if (!ids.length) { $('bulk-summary').textContent = 'Select at least one article first.'; return; }
+  const articles = cachedArticles.filter(a => ids.includes(a.id));
+
+  if (kind === 'flag') {
+    articles.forEach(a => { bulkStatus[a.id] = { state: 'pending' }; });
+    renderBulkTable();
+    try {
+      const r = await fetch('/articles/flag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+      articles.forEach(a => { bulkStatus[a.id] = { state: 'done', message: 'flagged as stale' }; });
+      $('bulk-summary').textContent = `Flagged ${articles.length} article${articles.length !== 1 ? 's' : ''} as stale.`;
+    } catch (e) {
+      articles.forEach(a => { bulkStatus[a.id] = { state: 'error', message: e.message }; });
+      $('bulk-summary').textContent = `Flagging failed: ${e.message}`;
+    }
+    renderBulkTable();
+    return;
+  }
+
+  if (kind === 'review') {
+    articles.forEach(a => { bulkStatus[a.id] = { state: 'pending' }; });
+    renderBulkTable();
+    let done = 0, errored = 0;
+    await runWithConcurrency(articles, 3, async (a) => {
+      bulkStatus[a.id] = { state: 'running' };
+      renderBulkTable();
+      try {
+        const r = await zdFetch('GET', `/help_center/articles/${a.id}`);
+        const full = r.article;
+        if (!full) throw new Error('Article not found');
+        const plain = stripHtml(full.body || '').slice(0, 6000);
+        const resp = await callLLM([
+          { role: 'system', content: BULK_REVIEW_SYSTEM_PROMPT },
+          { role: 'user', content: `Article title: ${full.title}\n\nArticle content:\n${plain}` },
+        ]);
+        const summary = resp && resp.answer ? stripHtml(resp.answer) : 'No suggestions generated.';
+        bulkStatus[a.id] = { state: 'done', message: summary };
+        done++;
+      } catch (e) {
+        bulkStatus[a.id] = { state: 'error', message: e.message };
+        errored++;
+      }
+      renderBulkTable();
+    });
+    $('bulk-summary').textContent = `AI review complete — ${done} succeeded, ${errored} failed.`;
+    return;
+  }
+}
+
 // ── Panel ─────────────────────────────────────────────────────────────────────
 function togglePanel() {
   panelOpen = !panelOpen;
@@ -751,6 +1015,7 @@ function onPanelSearch(v) {
   panelSearch = v.trim().toLowerCase();
   $('searchClear').classList.toggle('visible', !!panelSearch);
   renderPanel();
+  scheduleSessionSave();
 }
 function clearPanelSearch() { $('panelSearch').value = ''; onPanelSearch(''); $('panelSearch').focus(); }
 
@@ -818,6 +1083,7 @@ function renderPanel() {
 async function openDetail(id) {
   currentDetailId = id;
   renderPanel();
+  scheduleSessionSave();
   const overlay = $('article-detail');
   $('detail-title').textContent = 'Loading…';
   $('detail-body').innerHTML = '<div class="detail-loading">Loading article…</div>';
@@ -874,7 +1140,7 @@ function closeDetail() {
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
-function addMsg(role, html, type = '') {
+function addMsg(role, html, type = '', record = true) {
   const wrap = $('messages');
   const div = document.createElement('div');
   div.className = `msg ${role}`;
@@ -882,6 +1148,13 @@ function addMsg(role, html, type = '') {
   div.innerHTML = `<div class="bubble${type ? ' ' + type : ''}">${DOMPurify.sanitize(html)}</div><span class="msg-time">${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`;
   wrap.appendChild(div);
   wrap.scrollTop = wrap.scrollHeight;
+  // record=false is used for transient bubbles (streaming placeholder) and
+  // when replaying a restored session (avoids re-saving what we just loaded).
+  if (record) {
+    displayHistory.push({ role, html, type });
+    if (displayHistory.length > 30) displayHistory = displayHistory.slice(-30);
+    scheduleSessionSave();
+  }
   return div;
 }
 
@@ -926,7 +1199,7 @@ async function send() {
     const onPartial = (full) => {
       const partial = extractStreamingAnswer(full);
       if (partial == null) return;
-      if (!liveBubble) { removeTyping(); liveBubble = addMsg('agent', ''); }
+      if (!liveBubble) { removeTyping(); liveBubble = addMsg('agent', '', '', false); }
       liveBubble.querySelector('.bubble').innerHTML = DOMPurify.sanitize(partial);
       $('messages').scrollTop = $('messages').scrollHeight;
     };
@@ -1578,6 +1851,7 @@ $('userInput').addEventListener('keydown', e => {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadZdCreds();
+restoreSession();
 fetch('/config').then(r => r.json()).then(cfg => {
   window._zdSubdomain = cfg.subdomain;
 }).catch(() => {});
@@ -1593,6 +1867,7 @@ document.addEventListener('keydown', e => {
   // Escape → close overlays
   if (e.key === 'Escape') {
     if ($('improve-preview').style.display !== 'none') { resolveImprovePreview(false); return; }
+    if (bulkOpen) { closeBulkView(); return; }
     if ($('article-detail').classList.contains('open')) { closeDetail(); return; }
     if (panelOpen) { togglePanel(); return; }
   }
