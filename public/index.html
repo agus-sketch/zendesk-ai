@@ -1760,7 +1760,12 @@ async function callLLM(messages, onPartial) {
     if (d.error) throw new Error(d.error);
     const raw = d.choices?.[0]?.message?.content || '{}';
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    try { return JSON.parse(cleaned); } catch { return { answer: raw }; }
+    try { return JSON.parse(cleaned); } catch {
+      // Same rationale as the send() fallback: don't leak the raw
+      // {"answer":"...} wrapper to callers that expect a parsed object.
+      const extracted = extractStreamingAnswer(raw);
+      return { answer: extracted != null ? extracted : raw };
+    }
   }
 
   if (!r.ok || !r.body) {
