@@ -125,6 +125,15 @@
     #userInput { flex: 1; resize: none; font-size: 14px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-m); font-family: inherit; line-height: 1.5; color: var(--text); outline: none; max-height: 120px; background: var(--surface-2); transition: border-color .15s, box-shadow .15s, background .15s; }
     #userInput:focus { border-color: var(--blue); background: var(--surface); box-shadow: 0 0 0 3px var(--blue-glow); }
     #userInput::placeholder { color: var(--text-3); }
+    #chat-inputwrap { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    #pastePreview { display: none; align-items: center; gap: 8px; }
+    #pastePreview.show { display: flex; }
+    #pastePreview img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+    #pastePreview .paste-hint { font-size: 12px; color: var(--text-3); }
+    #pastePreview .paste-warn { color: var(--err-text, #b45309); }
+    #pastePreview button { border: none; background: var(--surface-2); color: var(--text-2); width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 13px; line-height: 1; }
+    #pastePreview button:hover { background: var(--border-light); }
+    .msg-image { display: block; max-width: 220px; max-height: 220px; border-radius: 10px; margin-top: 6px; }
     #sendBtn { width: 40px; height: 40px; border-radius: var(--radius-m); border: none; background: var(--blue); color: #fff; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; transition: background .15s, transform .1s; box-shadow: 0 1px 4px rgba(31,115,183,.25); }
     #sendBtn:hover { background: var(--blue-hover); }
     #sendBtn:active { transform: scale(.91); }
@@ -321,7 +330,14 @@
         </div>
       </div>
       <div id="inputbar">
-        <textarea id="userInput" rows="1" placeholder="Ask about articles or give me an instruction…"></textarea>
+        <div id="chat-inputwrap">
+          <div id="pastePreview">
+            <img id="pastePreviewImg" alt="Pasted image" />
+            <span class="paste-hint" id="pastePreviewHint"></span>
+            <button type="button" onclick="clearPendingImage()" title="Remove image">✕</button>
+          </div>
+          <textarea id="userInput" rows="1" placeholder="Ask about articles or give me an instruction… (paste an image to include it)"></textarea>
+        </div>
         <button id="sendBtn" onclick="send()"><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></button>
       </div>
     </div>
@@ -462,6 +478,7 @@ let recentArticleContent = '';
 let cachedArticles = [], cachedSections = [], cachedCategories = [];
 let zendeskConnected = false;
 let currentDetailId = null;
+let pendingImage = null; // { dataUrl, base64, mediaType }
 
 const STORAGE_KEY = 'zai-keys';
 const ZD_CREDS_KEY = 'zai-zd-creds';
@@ -488,6 +505,8 @@ let bulkStatus = {}; // articleId -> { state: 'pending'|'running'|'done'|'error'
 const RULES_BLOCK = `You are ZAI, an AI assistant for managing Zendesk Help Center articles. Help the user search, read, explain, create, edit, move, duplicate, bulk-publish, and audit Help Center content. Be concise and action-oriented. Return ONLY one valid JSON object — no markdown fences, no text outside JSON.
 
 STATE message contains all current data (categories, sections, articles, recently fetched content). Never invent article IDs — only use IDs from ARTICLES in STATE.
+
+The user's message may include an attached image (e.g. a screenshot). Use it as visual context — describe it, answer questions about it, or use it as reference material when writing/editing article content — same output rules apply.
 
 === SCOPE ===
 Only help with Zendesk Help Center content. Off-topic: {"answer":"I only help with Help Center articles. Try: search, explain, list, create, move, or edit articles."}
@@ -1153,7 +1172,12 @@ function addMsg(role, html, type = '', record = true) {
   // record=false is used for transient bubbles (streaming placeholder) and
   // when replaying a restored session (avoids re-saving what we just loaded).
   if (record) {
-    displayHistory.push({ role, html, type });
+    // Pasted images are embedded as data: URIs and can be multiple MB each —
+    // don't let them bloat the KV-backed session blob, just note they existed.
+    const persistedHtml = html.includes('data:image')
+      ? html.replace(/<img[^>]*src="data:[^"]*"[^>]*>/g, '<em>[image attached]</em>')
+      : html;
+    displayHistory.push({ role, html: persistedHtml, type });
     if (displayHistory.length > 30) displayHistory = displayHistory.slice(-30);
     scheduleSessionSave();
   }
@@ -1183,17 +1207,81 @@ $('messages').addEventListener('click', e => {
   if (chip) quickSend(chip.dataset.query, chip);
 });
 
+// ── Paste-to-attach image ─────────────────────────────────────────────────────
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // keep requests well under Vercel's function body limit
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// groq has no vision model wired up here, and a plain-text ollama model can't
+// see images either — warn instead of silently sending an image it will ignore.
+function providerSupportsVision() {
+  if (provider === 'anthropic' || provider === 'openai') return true;
+  if (provider === 'ollama') return /vision|llava|vl(?:$|[^a-z])/i.test(ollamaModel);
+  return false;
+}
+
+function clearPendingImage() {
+  pendingImage = null;
+  $('pastePreview').classList.remove('show');
+  $('pastePreviewImg').src = '';
+}
+
+async function attachPastedImage(file) {
+  if (file.size > MAX_IMAGE_BYTES) {
+    addMsg('agent', 'That image is too large to attach (max 4MB) — try a smaller screenshot.', 'error');
+    return;
+  }
+  const dataUrl = await fileToDataUrl(file);
+  pendingImage = { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1), mediaType: file.type };
+  $('pastePreviewImg').src = dataUrl;
+  const supported = providerSupportsVision();
+  $('pastePreviewHint').textContent = supported ? 'Image attached' : 'Image attached — current model may not support images';
+  $('pastePreviewHint').classList.toggle('paste-warn', !supported);
+  $('pastePreview').classList.add('show');
+}
+
+$('userInput').addEventListener('paste', e => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const imageItem = Array.from(items).find(it => it.type.startsWith('image/'));
+  if (!imageItem) return;
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  e.preventDefault();
+  attachPastedImage(file);
+});
+
+// Builds the multimodal content array each provider expects when an image is
+// attached; falls back to a plain string (unchanged behavior) when it's not.
+function buildUserContent(text, img) {
+  if (!img) return text;
+  const textBlock = { type: 'text', text: text || 'Describe this image.' };
+  if (provider === 'anthropic') {
+    return [textBlock, { type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.base64 } }];
+  }
+  return [textBlock, { type: 'image_url', image_url: { url: img.dataUrl } }];
+}
+
 async function send() {
   const input = $('userInput');
   const text  = input.value.trim();
-  if (!text || busy) return;
+  const img   = pendingImage;
+  if ((!text && !img) || busy) return;
 
   if (!zendeskConnected) { addMsg('agent', 'Please connect first — enter your LLM key and click Connect.', 'error'); return; }
   if (!activeLLMKey() && provider !== 'ollama') { addMsg('agent', 'Please enter your LLM API key and click Connect.', 'error'); return; }
 
   input.value = ''; input.style.height = '';
-  addMsg('user', escHtml(text));
-  chatHistory.push({ role: 'user', content: text });
+  clearPendingImage();
+  addMsg('user', escHtml(text) + (img ? `<img class="msg-image" src="${img.dataUrl}">` : ''));
+  chatHistory.push({ role: 'user', content: buildUserContent(text, img) });
   busy = true; $('sendBtn').disabled = true; addTyping();
 
   try {
